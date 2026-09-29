@@ -1,0 +1,102 @@
+#!/usr/bin/env python3
+"""Every ten minutes, from a LaunchAgent: logs kept short, a backup when the newest is a day old, none kept
+past 14 days, and the operator told when that backup fails, when the public URL stops answering, and when it is back.
+"""
+from __future__ import annotations
+
+import contextlib
+import json
+import os
+import subprocess
+import sys
+import time
+import urllib.request
+from pathlib import Path
+
+HOME = Path(os.environ.get("BRIDGE_HOME") or Path.home() / ".bridge")
+BACKUPS = Path(os.environ.get("BRIDGE_BACKUPS") or Path.home() / ".bridge-backups")
+NOTIFY = os.environ.get("BRIDGE_OPERATOR_NOTIFY", "")
+BASE_URL = os.environ.get("BRIDGE_BASE_URL", "").rstrip("/")
+LOGS = ("server.log", "tunnel.log", "tick.log")
+LOG_MAX, LOG_KEEP = 5 << 20, 1 << 20
+BACKUP_EVERY = 24 * 3600
+BACKUP_KEEP = 14 * 24 * 3600    # the consent page promises members a bound on it
+BACKUP_NAME = "bridge-" + "[0-9]" * 8 + "T" + "[0-9]" * 6 + "Z.db"     # scripts/backup's, never a hand copy
+ALERT_EVERY = 3600
+HEADERS = {"User-Agent": "bridge-tick"}     # Cloudflare bans urllib's default one with a 403
+FAILS_BEFORE_ALERT = 2      # one failed check is often a tunnel reconnecting
+
+
+def trim(log: Path) -> None:
+    """In place, not by rename: launchd holds the file open and would go on writing to the old one."""
+    if not log.exists() or log.stat().st_size <= LOG_MAX:
+        return
+    with open(log, "r+b") as f:
+        f.seek(-LOG_KEEP, os.SEEK_END)
+        tail = f.read()
+        tail = tail[tail.find(b"\n") + 1:]      # start at a whole line
+        f.seek(0)
+        f.write(tail)
+        f.truncate()
+
+
+def healthy() -> bool:
+    try:
+        request = urllib.request.Request(f"{BASE_URL}/health", headers=HEADERS)
+        with urllib.request.urlopen(request, timeout=15) as response:
+            return json.load(response).get("ok") is True
+    except Exception:
+        return False
+
+
+def tell(line: str) -> bool:
+    try:
+        request = urllib.request.Request(NOTIFY, data=line.encode(), method="POST",
+                                         headers={"Title": "bridge", **HEADERS})
+        urllib.request.urlopen(request, timeout=15).close()
+        return True
+    except Exception:
+        return False
+
+
+def watch(state: dict, now: float) -> None:
+    """Told only when a line was delivered, so a failed notification is tried again next time."""
+    if healthy():
+        if state.get("down") and tell(f"Bridge is back up: {BASE_URL}"):
+            state["down"] = False
+        state["fails"] = 0
+        return
+    state["fails"] = state.get("fails", 0) + 1
+    if (state["fails"] >= FAILS_BEFORE_ALERT and now - state.get("alerted_t", 0) >= ALERT_EVERY
+            and tell(f"Bridge is down: {BASE_URL}/health has failed {state['fails']} checks in a row")):
+        state["alerted_t"] = now
+        state["down"] = True
+
+
+def main() -> None:
+    now = time.time()
+    for name in LOGS:
+        trim(HOME / name)
+    path, state = HOME / "tick.json", {}
+    with contextlib.suppress(OSError, ValueError):
+        state = json.loads(path.read_text())
+    if NOTIFY and BASE_URL:     # without the URL every check would fail, and a server that is up be called down
+        watch(state, now)
+    # Every time, not only after a backup that succeeded: the bound holds while backups fail too.
+    for p in [*BACKUPS.glob(BACKUP_NAME), *BACKUPS.glob(BACKUP_NAME + ".*.partial")]:
+        with contextlib.suppress(FileNotFoundError):
+            if now - p.stat().st_mtime > BACKUP_KEEP:
+                p.unlink()
+    newest = max((p.stat().st_mtime for p in BACKUPS.glob(BACKUP_NAME)), default=0)
+    failed = now - newest > BACKUP_EVERY and subprocess.run([Path(__file__).with_name("backup")]).returncode != 0
+    if (failed and NOTIFY and now - state.get("backup_alerted_t", 0) >= ALERT_EVERY
+            and tell("Bridge backup failed: see tick.log")):
+        state["backup_alerted_t"] = now
+    if NOTIFY:
+        path.with_suffix(".tmp").write_text(json.dumps(state))
+        path.with_suffix(".tmp").replace(path)
+    sys.exit(failed)
+
+
+if __name__ == "__main__":
+    main()

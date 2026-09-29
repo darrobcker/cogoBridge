@@ -1,0 +1,91 @@
+#!/bin/bash
+# scripts/deploy [--force] <commit>, from a checkout of this repository: puts that commit live.
+#
+# The live server runs from its own detached worktree, never from a working tree someone is editing. The
+# commit is built and tested in a throwaway worktree first, so nothing the running server can read changes
+# until everything has passed and the database is backed up. --force skips only the refusals it names.
+set -eu
+
+live=${BRIDGE_LIVE:-$HOME/bridge-live}
+data=$HOME/.bridge                    # where the server keeps it: its agent sets no BRIDGE_HOME
+db=$data/bridge.db
+port=${BRIDGE_PORT:-8770}
+restart=${BRIDGE_RESTART:-launchctl kickstart -k gui/$(id -u)/bridge.server}
+here=$(cd "$(dirname "$0")" && pwd)
+
+step() { printf '\n==> %s\n' "$*"; }
+die() { printf '\nDEPLOY FAILED: %s\n' "$*" >&2; exit 1; }
+trap 'echo "DEPLOY FAILED at line $LINENO of $0" >&2' ERR
+dirty() { [ -d "$1" ] && [ -n "$(git -C "$1" status --porcelain --untracked-files=no)" ]; }
+
+force=
+[ "${1:-}" = --force ] && { force=1; shift; }
+[ $# -eq 1 ] || die "usage: scripts/deploy [--force] <commit>"
+repo=$(git rev-parse --show-toplevel) || die "run it from a checkout of the repository"
+sha=$(git rev-parse --verify --quiet "$1^{commit}") || die "no such commit: $1"
+
+step "Deploying $sha from $repo to $live"
+[ -f "$db" ] || die "no database at $db, where the live server keeps it"
+# A plain directory inside some checkout would have git move, and with --force wipe, that checkout instead.
+[ ! -e "$live" ] || [ "$(git -C "$live" rev-parse --show-toplevel 2>/dev/null)" = "$(cd "$live" && pwd -P)" ] \
+  || die "$live is not a git worktree of its own"
+if [ -z "$force" ]; then
+  dirty "$repo" && die "$repo has uncommitted changes: commit them, or deploy knowing they are not included (--force)"
+  dirty "$live" && die "$live has uncommitted changes, which the deploy would throw away (--force to do so)"
+  git rev-parse --verify --quiet origin/main >/dev/null || die "no origin/main to check against (--force to skip)"
+  git merge-base --is-ancestor "$sha" origin/main || die "$sha is not on origin/main: push it first (--force to skip)"
+fi
+
+stage=$(mktemp -d)
+trap 'git -C "$repo" worktree remove --force "$stage" 2>/dev/null || rm -rf "$stage"' EXIT
+step "Building $sha in $stage"
+git -C "$repo" worktree add --quiet --detach "$stage" "$sha"
+(cd "$stage" && uv sync --frozen --quiet)
+
+step "ruff"
+(cd "$stage" && .venv/bin/ruff check .) || die "ruff"
+for run in 1 2 3 4 5; do
+  step "Tests, run $run of 5"
+  (cd "$stage" && .venv/bin/pytest -q -p no:cacheprovider) || die "the tests failed on run $run"
+done
+
+step "Rehearsing the migration on a copy of $db"
+sqlite3 "$db" ".backup '$stage/rehearsal.db'"
+(cd "$stage" && .venv/bin/python - rehearsal.db) <<'PY' || die "the new code could not open a copy of the live database"
+import sys
+
+from bridge.store import SCHEMA_VERSION, Store
+
+store = Store(sys.argv[1])
+check = store.one("PRAGMA integrity_check")[0]
+if check != "ok":
+    sys.exit(f"integrity_check after opening: {check}")
+print(f"opened at schema version {SCHEMA_VERSION}; integrity ok")
+PY
+
+# Before the move, so a failed backup leaves the old code serving the old templates, untouched.
+step "Backup"
+BRIDGE_HOME=$data "$here/backup" || die "the backup failed; nothing has moved"
+
+step "Moving $live to $sha"
+moved="$live is at $sha; the server is not running it, so look at $data/server.log"
+if [ -d "$live" ]; then
+  git -C "$live" checkout --quiet --force --detach "$sha"
+else
+  git -C "$repo" worktree add --quiet --detach "$live" "$sha"
+fi
+(cd "$live" && uv sync --frozen --quiet) || die "uv sync: $moved"
+
+step "Restarting: $restart"
+sh -c "$restart" || die "restart: $moved"
+
+step "Waiting for http://127.0.0.1:$port/health to report $sha"
+seen=
+end=$((SECONDS + 60))
+while [ "$SECONDS" -lt "$end" ]; do
+  seen=$(curl -fsS --max-time 2 "http://127.0.0.1:$port/health" 2>/dev/null \
+         | sed -n 's/.*"version":"\([^"]*\)".*/\1/p') || true
+  if [ -n "$seen" ] && [ "${sha#"$seen"}" != "$sha" ]; then step "Live: $seen"; exit 0; fi
+  sleep 1
+done
+die "after 60s /health reports '${seen:-nothing}', not $sha. $moved"

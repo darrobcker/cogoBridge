@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% block title %}Join {{ community.name }}{% endblock %}
+{% block role %}join{% endblock %}
+{% block main %}
+<h1>Join {{ community.name }}</h1>
+<p>Already use Bridge? Press nothing: paste this link into your AI and say "join this". Adding it again would make a
+second account.</p>
+<label for="invite">This page's link</label>
+<textarea id="invite" class="link" readonly rows="2">{{ link }}</textarea>
+<ul>
+<li>Everyone here can read what you ask for, without your name. Only someone you both say yes to learns who you
+are.</li>
+{% if small %}
+<li>Fewer than ten people have ever joined it, so whoever is in it may well guess who wrote a need.</li>
+{% endif %}
+<li>{{ operator or "Whoever runs this server" }} can read everything stored here, including messages.</li>
+<li>Claude, free plan too{% if not claude_listed %}, on a computer the first time{% endif %}; or
+ChatGPT{% if not chatgpt_listing %} (a paid plan), in a computer's browser every time: its phone app
+cannot connect yet{% endif %}. No email, no password: you press Allow once.</li>
+<li>Your AI account must be yours alone: anyone who uses it can say yes as you.</li>
+</ul>
+<form method="post">
+<button type="submit" name="ai" value="claude">Join with Claude</button>
+<button type="submit" name="ai" value="chatgpt">Join with ChatGPT</button>
+<button type="submit" name="ai" value="other">Another AI</button>
+</form>
+<p class="muted"><a href="/privacy">Who sees what</a></p>
+{% endblock %}

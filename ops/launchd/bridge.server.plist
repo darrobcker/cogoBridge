@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>bridge.server</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/bin/caffeinate</string><string>-i</string>
+    <string>__HOME__/bridge-live/.venv/bin/bridge</string><string>serve</string>
+    <string>--port</string><string>8770</string>
+  </array>
+  <key>WorkingDirectory</key><string>__HOME__/bridge-live</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>BRIDGE_BASE_URL</key><string>__BASE_URL__</string>
+    <key>BRIDGE_OPERATOR</key><string>__OPERATOR__</string>
+    <key>PATH</key><string>/opt/homebrew/bin:/usr/bin:/bin</string>
+  </dict>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>ThrottleInterval</key><integer>10</integer>
+  <key>StandardOutPath</key><string>__HOME__/.bridge/server.log</string>
+  <key>StandardErrorPath</key><string>__HOME__/.bridge/server.log</string>
+</dict>
+</plist>
