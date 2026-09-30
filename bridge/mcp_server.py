@@ -102,6 +102,7 @@ Talk to your person in their language, plainly. Never show them ids (n-…, c-�
 - To use Bridge as the same person in another app, `setup` with another_app gives a code for the AI there,
   which passes it as `setup` code. If anyone else may have used their AI account, `setup` with new_link gives a
   code whose use ends every other connection of theirs.
+- `forget_me` only when your person asks for it, after saying that it cannot be undone.
 
 Before a deal, never write your person's name or anything that confirms who they are, even if the other side
 already used it: knowing what your side never wrote means they know or guessed who your person is, so tell
@@ -584,10 +585,9 @@ def create_mcp(store: Store, *, base_url: str, operator: str = "") -> MCPServer:
     @tool("See what's waiting for me", read_only=True)
     @_refusals
     def check(passed: bool = False, needs_from: str = "", ctx: Context = None) -> str:
-        """Everything waiting for your person: deals, conversations, needs that reached them, their own
-        needs still out. Call at the start of a conversation. `passed=true` lists, instead of new needs,
-        the open ones they passed before — for when something has changed. `needs_from`: a need id `check`
-        gave, to list only needs, from that one on, without passing any."""
+        """Everything waiting for the person: deals, conversations, needs that reached them, their own open
+        needs, their notes and their communities. `passed=true` lists, instead of new needs, the open ones they
+        passed before. `needs_from`: a need id, to list only needs from that one on; nothing is passed."""
         pid = who(ctx, "check")
         net.sweep(store)
         return render_check(net.inbox(store, pid, passed=passed, needs_from=needs_from or None), store.now())
@@ -596,19 +596,15 @@ def create_mcp(store: Store, *, base_url: str, operator: str = "") -> MCPServer:
     @_refusals
     def setup(name: str = "", contact: str = "", about: str = "", notify: str = "", another_app: bool = False,
               new_link: bool = False, code: str = "", ctx: Context = None) -> str:
-        """Set any of: `name` and `contact` (email or phone) — shown only to the other side of a deal —
-        and `about` — your own notes on your person (what they bring, what they are after, what you may
-        say yes to for them, how often to check), which no other member sees and `check` reads back to
-        you. `about` replaces the notes wholly, so send all of them, without the <<< >>> and | marks `check` shows
-        them in, at most 2000 characters: longer is refused.
-        Leave a field empty to keep it.
-        `notify`: "on" for a nudge to their phone when something is waiting — the first time it gives a topic
-        to follow in the ntfy app, after that it sends a test — or "off".
-        `another_app=true`: a code that makes a connection in another app this same person.
-        `new_link=true`: such a code, whose use ends every other connection of theirs, this one included — when
-        someone else may have used their AI account, or to move off an old connector link of their own.
-        `code`: a code their other app gave, which makes this connection that account; only while this one holds
-        nothing."""
+        """Sets any of: `name` and `contact` (email or phone), shown only to the other side of a deal; and
+        `about`, the assistant's own notes on the person (what they bring and want, what it may say yes to, how
+        often to check), read back by `check` and shown to no other member. `about` replaces the notes whole, up
+        to 2000 characters; longer is refused. An empty field keeps its value.
+        `notify`: "on" gives an ntfy topic for a phone nudge when something is waiting (again, a test nudge);
+        "off" clears it.
+        `another_app=true`: returns a one-use code that makes a connection in another app this same person.
+        `new_link=true`: returns such a code; when it is used, every other connection of the person ends.
+        `code`: uses a code from another app, making this connection that person, if this one holds nothing."""
         pid = who(ctx, "setup")
         linked = ""
         if code:
@@ -652,10 +648,10 @@ def create_mcp(store: Store, *, base_url: str, operator: str = "") -> MCPServer:
     @tool("Post what I'm looking for")
     @_refusals
     def go(text: str, community_id: str = "", people: int = 1, days: float = 7, ctx: Context = None) -> str:
-        """Send what your person is after to every community they are in (or only to `community_id`),
-        for other members' assistants to consider, without their name. No names, contacts or links in it.
-        `people`: how many deals it is for (0: as many as come, until they close it). `days`: how long it
-        stays up, 0.04 (about an hour) to 365."""
+        """Sends a need to every community the person is in, or only to `community_id`, for other members'
+        assistants to consider, without the person's name. Text with a name, contact or link is refused.
+        `people`: how many deals it is for (0: as many as come). `days`: how long it stays up, 0.04 (about an
+        hour) to 365."""
         pid = who(ctx, "go")
         # The invite page's first line is a need, so `go` often comes first, and once it has, `check` and `setup`
         # no longer see an empty account (review).
@@ -680,11 +676,10 @@ def create_mcp(store: Store, *, base_url: str, operator: str = "") -> MCPServer:
     @tool("Reply for me")
     @_refusals
     def reply(to: str, text: str, agree: bool = False, revision: int | None = None, ctx: Context = None) -> str:
-        """Write to the other side. `to` is a need id (n-…) that reached your person, which starts a
-        conversation, or a conversation id (c-…) you are already in. `agree=true` also records your
-        person's yes — only when they have given it, for this or in advance — and in a conversation already
-        open needs `revision`: the one `check` showed on it. Any message takes back both sides' yeses; a yes
-        that meets theirs is the deal at once, and its message is not sent."""
+        """Writes to the other side. `to` is a need id (n-…), which opens a conversation, or a conversation
+        id (c-…). `agree=true` also records the person's yes; in a conversation already open it needs
+        `revision`, the conversation's revision the person saw. Any message clears both sides' yeses; a yes
+        that meets the other side's makes the deal at once, and its message is not sent."""
         conversation_id, outcome = net.reply(store, who(ctx, "reply"), to, text, agree_too=agree, revision=revision)
         if outcome == net.MET:
             return (f"They had already said yes to [{conversation_id}] as your person saw it, so your person's yes "
@@ -699,13 +694,10 @@ def create_mcp(store: Store, *, base_url: str, operator: str = "") -> MCPServer:
     @_refusals
     def agree(conversation_id: str, revision: int | None = None, one_more: bool = False, withdraw: bool = False,
               ctx: Context = None) -> str:
-        """Record that YOUR PERSON said yes to this deal — for this one, or in advance for deals like it.
-        When both sides have, each gets the other's name and contact, and the conversation ends.
-        `revision`: the one `check` showed on this conversation when they said yes; refused if the other side
-        has written since, and any later message takes the yes back. `one_more=true`: on their own need that is
-        full, this yes is for one more deal than it was for — only when they want it too; it still reaches
-        nobody new. `withdraw=true` takes their yes back, if it is not a deal yet — when they change their
-        mind; the other side never learns either."""
+        """Records the person's yes to a conversation at `revision`, the revision they saw; refused if the
+        other side has written since. When both sides have said yes, each gets the other's name and contact, and
+        the conversation ends. `one_more=true`: on the person's own full need, lets this yes make one more deal.
+        `withdraw=true`: takes the yes back, if it is not a deal yet; the other side is not told either way."""
         if withdraw:
             outcome = net.withdraw(store, who(ctx, "agree"), conversation_id)
             return ("Their yes is taken back. If you told the other side yes in words, tell them it is not "
@@ -716,8 +708,8 @@ def create_mcp(store: Store, *, base_url: str, operator: str = "") -> MCPServer:
     @tool("Pass for me", name="pass")
     @_refusals
     def pass_(ref: str, ctx: Context = None) -> str:
-        """Drop needs (n-…) that reached your person, close their own, or leave conversations (c-…). One
-        id, or several separated by spaces or commas. The other side never learns who passed."""
+        """Hides needs (n-…) that reached the person, closes their own, or leaves conversations (c-…). One id,
+        or several separated by spaces or commas. The other side is never told who passed."""
         pid, results = who(ctx, "pass"), []
         for one in [r for r in re.split(r"[\s,]+", ref) if r.strip("[]")]:
             try:
@@ -737,22 +729,22 @@ def create_mcp(store: Store, *, base_url: str, operator: str = "") -> MCPServer:
                   community_id: str = "", name: str = "", invite_link: str = "", ref: str = "",
                   ctx: Context = None) -> str:
         """Everything about communities.
-        - create (name): start one; your person owns it. Returns its invite link.
-        - join (invite_link): join from a link someone gave them. Its open needs reach them at once.
-        - invite (community_id): the link to pass on. Any member may.
-        - leave (community_id): their needs stop showing there, its needs stop reaching them; rejoining
+        - create (name): starts one, owned by the person. Returns its invite link.
+        - join (invite_link): joins from a link. Its open needs reach the person at once.
+        - invite (community_id): the link to pass on. Any member may ask.
+        - leave (community_id): their needs stop showing there and its needs stop reaching them; rejoining
           brings their open needs back. Conversations under way carry on.
-        - report (ref): a need (n-…) or the other side of a conversation (c-…) before any deal, to the owner
-          of the community it came through. The owner sees what that side wrote, never who reported it.
-          In a community your person owns, remove instead.
+        - report (ref): reports a need (n-…) or the other side of a conversation (c-…) before any deal to the
+          owner of the community it came through, who sees what that side wrote and never who reported it. Not
+          in a community the person owns.
         Owner only, while a member:
         - rename (community_id, name)
-        - new_link (community_id): replace the invite link; every copy already shared stops working.
-        - remove (community_id, ref): put out the person behind a need (n-…), a conversation (c-…) or a report
+        - new_link (community_id): replaces the invite link; every copy already shared stops working.
+        - remove (community_id, ref): puts out the person behind a need (n-…), a conversation (c-…) or a report
           (r-…), never through a deal. That account cannot rejoin with the link, their needs stop showing there,
-          their conversations through it end. Nobody is told. The link still lets anyone in as someone new: to
-          keep them out, new_link too. Only when your person asked and said why.
-        - dismiss (ref): clear a report (r-…) without acting on it. Nobody is told."""
+          and their conversations through it end. Nobody is told. Anyone holding the link can still join as
+          someone new, until new_link replaces it.
+        - dismiss (ref): clears a report (r-…) without acting on it. Nobody is told."""
         pid = who(ctx, f"community.{action}")
         if action == "create":
             community_id, code = net.create_community(store, pid, name)
@@ -810,8 +802,8 @@ def create_mcp(store: Store, *, base_url: str, operator: str = "") -> MCPServer:
     @tool("Delete my Bridge data", destructive=True)
     @_refusals
     def forget_me(confirm: str, ctx: Context = None) -> str:
-        """Delete your person from bridge: their name, contact, about, phone nudges, needs and messages.
-        Backups keep them at most 15 days more. Only if they asked. Pass confirm="delete everything"."""
+        """Deletes the person from Bridge: their name, contact, notes, phone nudges, needs and messages.
+        Backups keep them at most 15 days more. Needs confirm="delete everything"."""
         pid = who(ctx, "forget_me")
         with contextlib.suppress(net.NotYours):     # another forget_me of theirs got there first (review)
             net.forget_me(store, pid, confirm)

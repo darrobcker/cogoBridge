@@ -449,6 +449,20 @@ def test_tool_titles_speak_as_the_person_and_only_forget_me_is_destructive(store
     assert {name for name, a in tools.items() if a.destructive_hint} == {"forget_me"}
 
 
+def test_tool_descriptions_say_what_a_tool_does_and_give_no_orders(store):
+    """Claude's directory requires tool descriptions without instructions about model behaviour; the rules for when
+    to call what are in the server's instructions, which every assistant receives. "Call at the start of a
+    conversation" and "only when they have given it" were in the descriptions (directory review)."""
+    tools = asyncio.run(create_mcp(store, base_url=SITE).list_tools())
+    for tool in tools:
+        for order in (r"\bonly (when|if)\b", r"\bcall (at|this|it)\b", r"\b(must|should)\b", r"\bYOUR PERSON\b",
+                      r"\bask(ed)?\b.*\bsay-so\b", r"\buse this\b"):
+            assert not re.search(order, tool.description, re.I), (tool.name, order)
+    rules = create_mcp(store, base_url=SITE).instructions
+    for rule in ("`agree` only on your person's yes", "`forget_me` only when your person asks", "Each chat, `check`"):
+        assert rule in " ".join(rules.split()), rule
+
+
 def test_go_makes_no_absolute_claim(live):
     """"In front of … now" was untrue for hours or days (review); what went out, and when anyone may see it, is
     all the answer can say."""
