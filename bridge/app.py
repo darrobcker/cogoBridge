@@ -12,12 +12,13 @@ from pydantic import AnyHttpUrl
 from starlette.applications import Starlette
 from starlette.middleware import Middleware
 from starlette.middleware.authentication import AuthenticationMiddleware
-from starlette.responses import RedirectResponse
+from starlette.responses import PlainTextResponse, RedirectResponse
 from starlette.routing import Mount, Route
 
 from .mcp_server import create_mcp
 from .oauth import SCOPE, Provider
 from .store import Store
+from .web import _version
 from .web import create_app as create_web
 
 
@@ -25,9 +26,10 @@ def create_app(store: Store, *, base_url: str, operator: str = "", **site: str) 
     """`site`: what the pages say beyond the server's own state (`web.create_app`), such as Bridge's page in each
     app's directory once it has one."""
     base = base_url.rstrip("/")
-    # One MCP app answers both doors: who is calling is read from each request, never from its session.
-    mcp_app = create_mcp(store, base_url=base, operator=operator).streamable_http_app(streamable_http_path="/mcp",
-                                                                                      host="0.0.0.0")
+    # One MCP app answers both doors: who is calling is read from each request, never from its session. So it keeps
+    # none: a deploy's restart no longer ends every app's session, and each answer is plain JSON, not a stream.
+    mcp_app = _PostOnly(create_mcp(store, base_url=base, operator=operator, version=_version()).streamable_http_app(
+        streamable_http_path="/mcp", host="0.0.0.0", stateless_http=True, json_response=True))
     provider = Provider(store, base)
     # Through AuthSettings, which keeps a bare host without the "/" pydantic adds: issuers are compared exactly.
     settings = AuthSettings(issuer_url=base, resource_server_url=f"{base}/mcp", validate_token_resource=False)
@@ -52,7 +54,22 @@ def create_app(store: Store, *, base_url: str, operator: str = "", **site: str) 
                   Middleware(AuthenticationMiddleware, backend=BearerAuthBackend(ProviderTokenVerifier(provider))),
                   Middleware(AuthContextMiddleware)]
     return Starlette(routes=routes, middleware=middleware,
-                     lifespan=lambda app: mcp_app.router.lifespan_context(mcp_app))
+                     lifespan=lambda app: mcp_app.app.router.lifespan_context(mcp_app.app))
+
+
+class _PostOnly:
+    """Nothing is pushed to an app down a held-open stream (a wake-up is a signed webhook), so a GET that would open
+    one is told so at once (405, as the transport allows), rather than held open with nothing ever coming."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "http" and scope["method"] == "GET":
+            refused = PlainTextResponse("Bridge answers MCP over POST.", 405, headers={"Allow": "POST"})
+            await refused(scope, receive, send)
+            return
+        await self.app(scope, receive, send)
 
 
 class _OneHost:

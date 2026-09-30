@@ -1385,12 +1385,18 @@ def inbox(store: Store, person_id: str, *, passed: bool = False, needs_from: str
                 item["others_on_need"] = len(live_on[conv["need_id"]] - {conv["id"]})
                 item["deal_fills_need"] = need["wants"] - need["deals"] == 1
         conversations.append(item)
-    open_needs = (f"FROM needs n JOIN people a ON a.id=n.author_id WHERE n.author_id<>? AND {_TAKING} "
+    # Only needs sent to one of the reader's own communities are even looked at (the rest of the query then decides,
+    # exactly as before): read against every need on the server, `check` grew with the whole server, not with what
+    # the reader could ever be shown — 65 ms at 20,000 needs, most of it deciding against needs from elsewhere.
+    open_needs = ("FROM needs n JOIN people a ON a.id=n.author_id WHERE n.id IN (SELECT nc.need_id "
+                  "FROM memberships r JOIN need_communities nc ON nc.community_id=r.community_id "
+                  "WHERE r.person_id=? AND r.left_t IS NULL) "
+                  f"AND n.author_id<>? AND {_TAKING} "
                   "AND a.deleted_t IS NULL AND " + _SHARED.format(reader="?") + " "
                   f"AND {'' if passed else 'NOT '}EXISTS "
                   "(SELECT 1 FROM passes p WHERE p.need_id=n.id AND p.person_id=?) "
                   "AND NOT EXISTS (SELECT 1 FROM conversations c WHERE c.need_id=n.id AND c.responder_id=?)")
-    args: tuple = (person_id, now, person_id, person_id, person_id)
+    args: tuple = (person_id, person_id, now, person_id, person_id, person_id)
     with store.transaction():
         if needs_from:
             # Any need that was sent to them marks a place, whatever has become of it since: one refused once it

@@ -22,6 +22,10 @@ With an https address the server keeps to it: `www.` and visits over plain http 
 Cloudflare's `CF-Visitor` or a proxy's `X-Forwarded-Proto`) are sent to the address itself, and every answer tells
 browsers to stay on https.
 
+The MCP door keeps no sessions and answers in plain JSON: who is calling is read from each request, so a deploy's
+restart ends nothing an app holds, and a GET that would open a stream is refused (nothing is ever pushed down one;
+wake-ups are webhooks). Files under `/static` asked for with `?v=` may be kept a year, the rest a day.
+
 ## Installing the agents on a Mac, once
 
 ```bash

@@ -16,10 +16,11 @@ from datetime import UTC, datetime
 from typing import Literal
 
 import anyio
+from mcp.server.caching import CacheHint
 from mcp.server.mcpserver import Context, MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.shared.exceptions import MCPError
-from mcp.types import INVALID_PARAMS, CallToolResult, RequestParams, TextContent, ToolAnnotations
+from mcp.types import INVALID_PARAMS, CallToolResult, Icon, RequestParams, TextContent, ToolAnnotations
 from pydantic import BaseModel
 
 from . import guard, net, notify
@@ -538,9 +539,15 @@ def _refusals(fn):
     return wrapper
 
 
-def create_mcp(store: Store, *, base_url: str, operator: str = "") -> MCPServer:
-    """`operator` is named to every assistant: asked who runs the server, one could not say (diary study)."""
-    mcp = _Server(name="Bridge", instructions=instructions(operator))
+def create_mcp(store: Store, *, base_url: str, operator: str = "", version: str = "") -> MCPServer:
+    """`operator` is named to every assistant: asked who runs the server, one could not say (diary study). `version`:
+    the commit, told to each app, so a report can say which server it met."""
+    # The tool list and what the server offers are the same for everyone and change only with a deploy: an app may
+    # keep them an hour, and share them across people, instead of asking again at every connection.
+    kept = CacheHint(ttl_ms=3_600_000, scope="public")
+    mcp = _Server(name="Bridge", title="Bridge", version=version or None, website_url=f"{base_url}/",
+                  icons=[Icon(src=f"{base_url}/favicon.ico", mime_type="image/x-icon")],
+                  instructions=instructions(operator), cache_hints={"tools/list": kept, "server/discover": kept})
     mcp.store = store
 
     def _door(request) -> tuple[str, str]:

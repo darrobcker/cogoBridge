@@ -11,7 +11,7 @@ import json
 import sqlite3
 import subprocess
 from pathlib import Path
-from urllib.parse import quote, urlparse
+from urllib.parse import parse_qs, quote, urlparse
 
 from jinja2 import ChoiceLoader, Environment, FileSystemLoader, select_autoescape
 from mcp.server.auth.provider import construct_redirect_uri
@@ -23,6 +23,21 @@ from starlette.staticfiles import StaticFiles
 
 from . import net
 from .store import Store
+
+DAY, YEAR = "public, max-age=86400", "public, max-age=31536000, immutable"
+
+
+class _Kept(StaticFiles):
+    """/static, with how long a browser may keep each file: one asked for with ?v= (a theme's versioned asset) never
+    changes under that name, so a year; the rest a day."""
+
+    async def get_response(self, path: str, scope) -> Response:
+        response = await super().get_response(path, scope)
+        if response.status_code == 200:
+            versioned = "v" in parse_qs(scope.get("query_string", b"").decode())
+            response.headers["Cache-Control"] = YEAR if versioned else DAY
+        return response
+
 
 AIS = ("claude", "chatgpt")         # anything else is "another AI"
 INVITE = "bridge_invite"        # the cookie: an invite code, and nothing else (PROTOCOL.md §5)
@@ -85,7 +100,7 @@ def create_app(store: Store, *, base_url: str, operator: str = "", claude_listin
         return page("consent.html")
 
     async def favicon(request: Request) -> Response:
-        return FileResponse(static / "favicon.ico", media_type="image/x-icon")
+        return FileResponse(static / "favicon.ico", media_type="image/x-icon", headers={"Cache-Control": DAY})
 
     async def challenge(request: Request) -> Response:
         return PlainTextResponse(openai_challenge) if openai_challenge else PlainTextResponse("", status_code=404)
@@ -136,6 +151,6 @@ def create_app(store: Store, *, base_url: str, operator: str = "", claude_listin
     return Starlette(routes=[Route("/", home), Route("/health", health), Route("/consent", consent),
                              Route("/privacy", consent), Route("/terms", consent),
                              Route("/.well-known/openai-apps-challenge", challenge),
-                             Route("/favicon.ico", favicon), Mount("/static", StaticFiles(directory=static)),
+                             Route("/favicon.ico", favicon), Mount("/static", _Kept(directory=static)),
                              Route("/allow", allow, methods=["GET", "POST"]),
                              Route("/join/{invite}", join, methods=["GET", "POST"])])

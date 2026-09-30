@@ -616,6 +616,36 @@ def test_www_goes_to_the_address_itself(store):
     assert moved.status_code == 301 and moved.headers["location"] == f"{SITE}/join/abc?x=1"
 
 
+def test_the_mcp_door_keeps_no_session_and_holds_no_stream_open(store):
+    """Who calls is read from each request, so no session is kept: a deploy's restart used to end every app's
+    session at once. And nothing is ever pushed down a stream, so a GET that would open one is refused at once."""
+    path = f"/c/{own_link(store, net.new_person(store))}/mcp"
+    with TestClient(create_app(store, base_url=SITE), base_url=SITE) as b:     # the transport needs its lifespan
+        _no_session_no_stream(b, path)
+
+
+def _no_session_no_stream(b, path):
+    head = {"accept": "application/json, text/event-stream", "content-type": "application/json"}
+    hello = b.post(path, headers=head, json={"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
+        "protocolVersion": "2025-11-25", "capabilities": {}, "clientInfo": {"name": "t", "version": "1"}}})
+    assert hello.status_code == 200 and hello.headers["content-type"].startswith("application/json")
+    assert "mcp-session-id" not in hello.headers
+    info = hello.json()["result"]["serverInfo"]
+    assert info["title"] == "Bridge" and info["websiteUrl"] == f"{SITE}/"
+    assert info["icons"][0]["src"] == f"{SITE}/favicon.ico"
+    assert b.get(path, headers={"accept": "text/event-stream"}).status_code == 405
+
+
+def test_files_say_how_long_to_keep_them(store):
+    """A versioned asset (?v=) never changes under its name, so a browser may keep it a year and never ask again; the
+    rest a day, so a changed logo reaches everyone by tomorrow."""
+    b = TestClient(create_app(store, base_url=SITE), base_url=SITE)
+    assert b.get("/static/favicon.ico?v=3").headers["cache-control"] == "public, max-age=31536000, immutable"
+    assert b.get("/static/favicon.ico").headers["cache-control"] == "public, max-age=86400"
+    assert b.get("/favicon.ico").headers["cache-control"] == "public, max-age=86400"
+    assert "cache-control" not in b.get("/").headers                     # pages are the server's own, every time
+
+
 def test_plain_http_goes_to_the_address_itself_and_browsers_are_told_to_stay(store):
     """Behind the tunnel, a visit over plain http was answered as if it were secure: a page, or a sign-in, could be
     read or changed on the way. Cloudflare says how the visitor came in CF-Visitor; other proxies in
