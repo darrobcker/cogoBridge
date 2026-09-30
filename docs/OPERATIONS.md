@@ -18,6 +18,10 @@ On a Mac these are the LaunchAgents in `ops/launchd/`; on Linux, three systemd u
 `-wal` and `-shm`, and the logs), backups in `~/.bridge-backups`. `/health` reads the database and answers
 `{"ok": true, "version": "<commit>"}`, or 503. Settings beyond those two are in `bridge/cli.py`.
 
+With an https address the server keeps to it: `www.` and visits over plain http (as the tunnel reports them, in
+Cloudflare's `CF-Visitor` or a proxy's `X-Forwarded-Proto`) are sent to the address itself, and every answer tells
+browsers to stay on https.
+
 ## Installing the agents on a Mac, once
 
 ```bash

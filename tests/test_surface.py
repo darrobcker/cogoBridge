@@ -616,6 +616,23 @@ def test_www_goes_to_the_address_itself(store):
     assert moved.status_code == 301 and moved.headers["location"] == f"{SITE}/join/abc?x=1"
 
 
+def test_plain_http_goes_to_the_address_itself_and_browsers_are_told_to_stay(store):
+    """Behind the tunnel, a visit over plain http was answered as if it were secure: a page, or a sign-in, could be
+    read or changed on the way. Cloudflare says how the visitor came in CF-Visitor; other proxies in
+    X-Forwarded-Proto."""
+    b = TestClient(create_app(store, base_url=SITE), base_url=SITE)
+    for came in ({"cf-visitor": '{"scheme":"http"}'}, {"x-forwarded-proto": "http"}):
+        moved = b.get("/join/abc?x=1", headers=came, follow_redirects=False)
+        assert moved.status_code == 301 and moved.headers["location"] == f"{SITE}/join/abc?x=1"
+        assert b.post("/token", headers=came, follow_redirects=False).status_code == 308
+    # Cloudflare's word wins over a proxy's: the tunnel reaches the server over http whatever the visitor used
+    secure = b.get("/", headers={"cf-visitor": '{"scheme":"https"}', "x-forwarded-proto": "http"})
+    assert secure.status_code == 200 and secure.headers["strict-transport-security"].startswith("max-age=")
+    local = TestClient(create_app(store, base_url="http://127.0.0.1:8770"), base_url="http://127.0.0.1:8770")
+    kept = local.get("/", headers={"x-forwarded-proto": "http"})
+    assert kept.status_code == 200 and "strict-transport-security" not in kept.headers
+
+
 # -- signing in ---------------------------------------------------------------------------------------------------
 
 def test_an_app_finds_how_to_sign_in_from_the_address_alone(store):

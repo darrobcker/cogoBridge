@@ -56,16 +56,39 @@ def create_app(store: Store, *, base_url: str, operator: str = "", **site: str) 
 
 
 class _OneHost:
-    """www. goes to the address itself: sign-in is issued for one name, and a page reached at another would hand out
-    links an app would treat as a different server."""
+    """One address and one way in: www. and plain http go to the address itself. Sign-in is issued for one name, and a
+    page reached at another would hand out links an app would treat as a different server; a page or a sign-in
+    reached over plain http could be read or changed on the way. Behind a proxy the visitor's own scheme is in its
+    headers: Cloudflare's CF-Visitor, or else X-Forwarded-Proto. A server whose address is plain http is left be."""
+
+    STAY = (b"strict-transport-security", b"max-age=15552000")   # browsers keep to https for half a year
 
     def __init__(self, app, *, www: str, base: str):
-        self.app, self.www, self.base = app, www.encode(), base
+        self.app, self.www, self.base, self.secure = app, www.encode(), base, base.startswith("https://")
+
+    def _plain(self, headers: dict) -> bool:
+        visitor = headers.get(b"cf-visitor")
+        if visitor is not None:
+            return b'"http"' in visitor.replace(b" ", b"")
+        return headers.get(b"x-forwarded-proto", b"").split(b",")[0].strip() == b"http"
 
     async def __call__(self, scope, receive, send):
-        if scope["type"] == "http" and dict(scope["headers"]).get(b"host", b"").split(b":")[0] == self.www:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        headers = dict(scope["headers"])
+        if headers.get(b"host", b"").split(b":")[0] == self.www or (self.secure and self._plain(headers)):
             query = scope.get("query_string", b"").decode()
             there = self.base + scope["path"] + (f"?{query}" if query else "")
-            await RedirectResponse(there, 301)(scope, receive, send)
+            # a form or a token request keeps its method and body
+            await RedirectResponse(there, 301 if scope["method"] in ("GET", "HEAD") else 308)(scope, receive, send)
             return
-        await self.app(scope, receive, send)
+        if not self.secure:
+            await self.app(scope, receive, send)
+            return
+
+        async def stamped(message):
+            if message["type"] == "http.response.start":
+                message = {**message, "headers": [*message.get("headers", []), self.STAY]}
+            await send(message)
+        await self.app(scope, receive, stamped)
