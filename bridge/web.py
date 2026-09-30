@@ -1,5 +1,5 @@
 """The only web pages: home, the invite page and the connect page it leads to, the Allow page an app's sign-in opens,
-and the consent text, which is also the privacy policy and the terms.
+the consent text, which is also the privacy policy and the terms, and one saying an address has no page.
 
 Everything after that happens in the chat. There is no inbox, no settings page and no password, and no page knows
 who anyone is: a person and their first membership are made at their AI's first tool call through a connection
@@ -25,6 +25,11 @@ from . import net
 from .store import Store
 
 DAY, YEAR = "public, max-age=86400", "public, max-age=31536000, immutable"
+# What a page may load and run: this server's own files, and the images a page's script makes from them. Styles may
+# be inline (the plain frame's are); scripts may not, so text that got past escaping could not run. No form-action:
+# Chrome holds a form's redirect to it too, and Allow's answer goes on to the app that asked.
+POLICY = ("default-src 'self'; img-src 'self' blob:; style-src 'self' 'unsafe-inline'; object-src 'none'; "
+          "base-uri 'none'; frame-ancestors 'none'")
 
 
 class _Kept(StaticFiles):
@@ -78,7 +83,7 @@ def create_app(store: Store, *, base_url: str, operator: str = "", claude_listin
                                                               claude_add=claude_add, claude_listed=bool(claude_listing),
                                                               chatgpt_listing=chatgpt_listing, **context),
                                 status_code=status)
-        response.headers["Content-Security-Policy"] = "frame-ancestors 'none'"
+        response.headers["Content-Security-Policy"] = POLICY
         return response
 
     def remember(response: Response, code: str) -> Response:
@@ -148,7 +153,11 @@ def create_app(store: Store, *, base_url: str, operator: str = "", claude_listin
         return RedirectResponse(construct_redirect_uri(data["redirect_uri"], code=code, state=data["state"]),
                                 status_code=303)
 
-    return Starlette(routes=[Route("/", home), Route("/health", health), Route("/consent", consent),
+    async def missing(request: Request, exc: Exception) -> Response:
+        return page("missing.html", 404)
+
+    return Starlette(exception_handlers={404: missing},
+                     routes=[Route("/", home), Route("/health", health), Route("/consent", consent),
                              Route("/privacy", consent), Route("/terms", consent),
                              Route("/.well-known/openai-apps-challenge", challenge),
                              Route("/favicon.ico", favicon), Mount("/static", _Kept(directory=static)),

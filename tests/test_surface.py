@@ -10,6 +10,7 @@ import secrets
 import socket
 import threading
 import time
+from pathlib import Path
 from typing import NamedTuple
 from urllib.parse import parse_qs, unquote, urlparse
 
@@ -558,12 +559,38 @@ def test_the_connect_page_is_for_the_ai_chosen_and_holds_no_secret(store):
     assert 'href="https://chatgpt.com/plugins/x"' in chatgpt and "Developer mode" not in chatgpt
 
 
-def test_no_page_can_be_framed(store):
+def test_no_page_can_be_framed_or_run_a_script_of_its_own(store):
+    """A page loads and runs only this server's files: text that got past escaping could not run, and no page, the
+    Allow page least of all, can be framed beneath another site's. Nothing says where a form may go: Chrome holds a
+    form's redirect to it too, and Allow's answer goes on to the app that asked."""
     _, invite = net.create_community(store, net.new_person(store), "Friends")
     b = browser(store)
     for response in (b.get("/"), b.get("/consent"), b.get("/privacy"), b.get(f"/join/{invite}"),
-                     b.post(f"/join/{invite}"), b.get("/join/nope"), b.get("/allow?r=nope")):
-        assert response.headers["content-security-policy"] == "frame-ancestors 'none'"
+                     b.post(f"/join/{invite}"), b.get("/join/nope"), b.get("/allow?r=nope"), b.get("/nope")):
+        policy = dict(p.strip().split(" ", 1) for p in response.headers["content-security-policy"].split(";"))
+        assert policy["frame-ancestors"] == "'none'" and policy["default-src"] == "'self'"
+        assert "script-src" not in policy and policy["object-src"] == "'none'" and policy["base-uri"] == "'none'"
+        assert "form-action" not in policy
+    for page in (Path(web.__file__).parent / "templates").glob("*.html"):     # so none of the pages' own could run
+        assert not re.search(r"<script(?![^>]*\bsrc=)|\son[a-z]+=", page.read_text()), page.name
+
+
+def test_every_answer_says_what_it_is_and_where_it_came_from_stays_unsaid(store):
+    """A browser takes a file for what its type says, never for what it looks like, and a link followed from here
+    tells the next site nothing of where the visitor came from."""
+    b = browser(store)
+    for response in (b.get("/"), b.get("/static/favicon.ico"), b.get("/health"), b.post("/mcp", json={}),
+                     b.get("/.well-known/oauth-authorization-server"), b.get("/nope")):
+        assert response.headers["x-content-type-options"] == "nosniff", response.url
+        assert response.headers["referrer-policy"] == "no-referrer", response.url
+
+
+def test_an_address_with_no_page_says_so_on_a_page(store):
+    """A mistyped address got two plain words and no way back; now a page in the site's own frame, with a link
+    home."""
+    missing = browser(store).get("/no/such/page")
+    assert missing.status_code == 404 and missing.headers["content-type"].startswith("text/html")
+    assert 'href="/"' in missing.text
 
 
 def test_the_other_pages(store):

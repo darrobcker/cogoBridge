@@ -72,7 +72,19 @@ launchctl bootout gui/$(id -u)/bridge.server &&
 ```
 
 Move `-wal` and `-shm` aside with the database (the `*` does): a WAL left beside a restored file is replayed
-into it. Delete `~/.bridge/aside` once the server answers.
+into it. Delete `~/.bridge/aside` once the server answers. Where systemd runs the server, the first line is
+`sudo systemctl stop bridge` and the last `sudo systemctl start bridge`.
+
+A backup nobody has restored is a hope. Now and then, open the newest in a scratch directory with the code that is
+live; the counts should be the live ones, less what happened since:
+
+```bash
+d=$(mktemp -d) && cp "$(ls -t ~/.bridge-backups/bridge-*.db | head -1)" "$d/bridge.db" &&
+  BRIDGE_HOME=$d uv run bridge stats; rm -rf "$d"
+```
+
+The backups sit on the same disk as the database. A copy kept anywhere else must be pruned at 14 days as they
+are: the consent page promises members 15 days at most.
 
 ## Someone who wants to start a community and has no invite
 

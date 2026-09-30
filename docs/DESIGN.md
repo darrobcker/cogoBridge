@@ -482,7 +482,8 @@ person a question after a deal.
 
 The only pages are home, which is also the documentation a directory asks for; the invite page and the connect
 page it leads to; the Allow page an app's sign-in opens, and its page for a sign-in that expired; the invalid-link
-page; and the consent page, which is also the privacy policy and the terms. None of them knows who anyone is. Beside
+page, and the page for an address with none; and the consent page, which is also the privacy policy and the
+terms. None of them knows who anyone is. Beside
 them, one line of plain text proves to OpenAI that this host is the publisher's. The Allow page
 exists because sign-in needs a page the person's own browser shows: it holds one button, and asks for nothing.
 
