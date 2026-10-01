@@ -83,8 +83,12 @@ d=$(mktemp -d) && cp "$(ls -t ~/.bridge-backups/bridge-*.db | head -1)" "$d/brid
   BRIDGE_HOME=$d uv run bridge stats; rm -rf "$d"
 ```
 
-The backups sit on the same disk as the database. A copy kept anywhere else must be pruned at 14 days as they
-are: the consent page promises members 15 days at most.
+The backups sit on the same disk as the database, so a lost machine takes them too. `BRIDGE_BACKUP_COPY` (tick's
+environment) sends each new one somewhere else: an Azure Blob container's address with a signature that may only
+create (a stored access policy with permission `c`), so the server can add a copy and never read, replace or delete
+one. The container must delete them itself inside the consent page's 15 days: a lifecycle rule deleting blobs
+12 days after they were written (the rule runs once a day), with blob soft delete and versioning off, since either
+would keep what the rule deletes. Restoring from there is the same as above, with the file downloaded first.
 
 ## Someone who wants to start a community and has no invite
 
@@ -137,10 +141,13 @@ then send people there, and stop saying a computer or a paid plan is needed.
 - Runs `scripts/backup` when the newest backup is over a day old, and deletes its backups older than 14 days
   (the consent page says 15: a day's margin for a machine that was off).
 - Trims `server.log`, `tunnel.log` and `tick.log` to their last megabyte once one passes 5 MB.
+- With `BRIDGE_BACKUP_COPY` set: copies the newest backup there once, and tries again on the next run if that
+  failed.
 - With `BRIDGE_OPERATOR_NOTIFY` set: after two failed checks of the public `/health` in a row, posts
-  one line there, at most hourly, and one when it answers again; also when a backup fails.
+  one line there, at most hourly, and one when it answers again; also when a backup or its copy fails.
 
-A machine that is off sends nothing. The ntfy lines say only up, down, or that a backup failed.
+A machine that is off sends nothing, so something elsewhere has to check the public `/health` too. The ntfy
+lines say only up, down, or that a backup or its copy failed.
 
 ## The ntfy budget
 

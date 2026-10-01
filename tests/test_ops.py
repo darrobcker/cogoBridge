@@ -228,6 +228,8 @@ class Watched(http.server.BaseHTTPRequestHandler):
     public URL, it bans urllib's default User-Agent."""
     up = False
     told: list[str] = []
+    kept: dict[str, bytes] = {}         # the off-site container: upload-only, so a name once written stays
+    put_fails = False
 
     def banned(self) -> bool:
         if not self.headers.get("User-Agent", "").startswith("Python-urllib"):
@@ -251,6 +253,17 @@ class Watched(http.server.BaseHTTPRequestHandler):
         self.send_response(200)
         self.end_headers()
 
+    def do_PUT(self):
+        body = self.rfile.read(int(self.headers["Content-Length"]))
+        name = self.path.split("?")[0]
+        status = 500 if Watched.put_fails else 409 if name in Watched.kept else 201
+        if self.banned() or self.headers.get("x-ms-blob-type") != "BlockBlob" or not self.path.endswith("?sig=s3cret"):
+            status = 403
+        if status == 201:
+            Watched.kept[name] = body
+        self.send_response(status)
+        self.end_headers()
+
     def log_message(self, *args):
         pass
 
@@ -259,7 +272,7 @@ class Watched(http.server.BaseHTTPRequestHandler):
 def watched():
     server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Watched)
     threading.Thread(target=server.serve_forever, daemon=True).start()
-    Watched.up, Watched.told = False, []
+    Watched.up, Watched.told, Watched.kept, Watched.put_fails = False, [], {}, False
     yield f"http://127.0.0.1:{server.server_address[1]}"
     server.shutdown()
 
@@ -304,6 +317,34 @@ def test_tick_tells_the_operator_when_the_backup_fails_and_calls_nothing_down_wi
         assert done.returncode != 0 and "BACKUP FAILED" in done.stderr
     assert Watched.told == ["Bridge backup failed: see tick.log"]
     assert "fails" not in json.loads((h / ".bridge" / "tick.json").read_text())
+
+
+def test_each_new_backup_is_copied_off_the_machine_once_and_a_failed_copy_is_retried_and_told(home, watched):
+    """The backups sat on the server's own disk, so losing the machine lost them too. Each new one goes to a container
+    that takes uploads only; a copy that fails is tried again next time, the operator is told at most hourly, and the
+    address, which carries the signature, is never printed."""
+    h, env = home
+    env = {**env, "BRIDGE_OPERATOR_NOTIFY": f"{watched}/topic", "BRIDGE_BACKUP_COPY": f"{watched}/box?sig=s3cret"}
+    tick(env)
+    (first,) = backups(h)
+    assert Watched.kept == {f"/box/{first.name}": first.read_bytes()}
+    tick(env)
+    assert len(Watched.kept) == 1                                       # once
+    first.rename(h / "backups" / "bridge-20000101T000000Z.db")
+    age(h / "backups" / "bridge-20000101T000000Z.db", DAY + 60)
+    time.sleep(1.1)                                     # a backup's name is its second: the next must differ
+    Watched.put_fails = True
+    for _ in range(2):
+        done = run(env, sys.executable, SCRIPTS / "tick")
+        assert done.returncode != 0 and "BACKUP COPY FAILED" in done.stderr and "s3cret" not in done.stderr
+    assert Watched.told == ["Bridge's backup could not be copied off the machine: see tick.log"]
+    Watched.put_fails = False
+    tick(env)
+    assert len(Watched.kept) == 2 and len(backups(h)) == 2
+    state = h / ".bridge" / "tick.json"
+    state.write_text(json.dumps({k: v for k, v in json.loads(state.read_text()).items() if k != "copied"}))
+    tick(env)                                                           # its answer lost: already there is copied
+    assert len(Watched.kept) == 2 and len(Watched.told) == 1
 
 
 # -- deploy ---------------------------------------------------------------------------------------------
