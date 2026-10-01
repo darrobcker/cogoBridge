@@ -138,6 +138,8 @@ def create_app(store: Store, *, base_url: str, operator: str = "", claude_listin
         ai = ai if ai in AIS else "other"
         # A press, not a person: counted by the AI chosen, so presses can be read against Allows and first calls.
         net.log_call(store, f"join-page {ai} {community['id']}")
+        if ai == "claude":      # straight to Claude's own dialog, in a tab of its own; the next step is on Allow
+            return remember(RedirectResponse(claude_add, status_code=303), community["invite_code"], ai)
         return remember(page("connect.html", community=community, ai=ai, link=link), community["invite_code"], ai)
 
     async def allow(request: Request) -> Response:

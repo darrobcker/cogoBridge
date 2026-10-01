@@ -530,33 +530,44 @@ def test_the_join_page_says_who_can_read_what_before_the_button(store):
     assert "paid plan" not in listed and "computer" not in listed
 
 
-def test_the_connect_page_is_for_the_ai_chosen_and_holds_no_secret(store):
-    """Every connector link was a secret on this page, so it had to be no-store and warned to keep it; now everyone
-    adds the same address and signs in, and the page holds nothing anyone could act as."""
+def test_join_with_claude_goes_straight_to_claude_and_the_others_get_a_connect_page(store):
+    """A page between the invite and Claude held one button and the words for step 2, which were gone by the time
+    the person came back from Allow (review of the flows). Join with Claude now opens Claude's own dialog, in a tab of
+    its own so the invite page is still there if Claude asks them to sign in first; the next step is on the Allow
+    page, the last one they see. ChatGPT and other AIs still need their steps written out, and the address."""
     _, invite = net.create_community(store, net.new_person(store), "Friends")
-    response = browser(store).post(f"/join/{invite}", data={"ai": "claude"})
-    page = response.text
-    install = re.search(r'href="(https://claude\.ai/customize/connectors\?[^"]+)"', page).group(1)
-    assert "modal=add-custom-connector" in install and unquote(install.split("connectorUrl=")[1]) == f"{SITE}/mcp"
-    assert "/c/" not in page and "secret" not in page.lower()
-    assert response.cookies.get(web.INVITE) == invite
-    assert "Already in your AI? Don't add it again" in page       # the invite page asked first, before any button
-    assert "sign in" in page and "Allow" in page and "Developer mode" not in page
-    # Claude opens in a tab of its own, so this page is still there for step 2.
-    assert re.search(r'<a [^>]*target="_blank"[^>]*>Add Bridge to Claude', page)
-    # Each thing to copy is a labelled, read-only field: VoiceOver spelled out an unlabelled paragraph (diary)
-    for field in ("connector", "first", "invite"):
-        assert f'<label for="{field}">' in page and f'<textarea id="{field}"' in page
+    page = browser(store).get(f"/join/{invite}").text
+    assert re.search(r'<button[^>]*value="claude"[^>]*formtarget="_blank"', page) and "sign in" in page
+    pressed = browser(store).post(f"/join/{invite}", data={"ai": "claude"}, follow_redirects=False)
+    install = pressed.headers["location"]
+    assert pressed.status_code == 303 and "modal=add-custom-connector" in install
+    assert unquote(install.split("connectorUrl=")[1]) == f"{SITE}/mcp"
+    assert pressed.cookies.get(web.INVITE) == invite and pressed.cookies.get(web.AI) == "claude"
     chatgpt = browser(store).post(f"/join/{invite}", data={"ai": "chatgpt"}).text
     assert "Developer mode" in chatgpt and "OAuth" in chatgpt and "claude.ai/customize" not in chatgpt
+    assert "/c/" not in chatgpt and "secret" not in chatgpt.lower()
+    for field in ("connector", "first", "invite"):     # labelled, read-only: VoiceOver spelled out a bare paragraph
+        assert f'<label for="{field}">' in chatgpt and f'<textarea id="{field}"' in chatgpt
     other = browser(store).post(f"/join/{invite}", data={"ai": "anything"}).text
     assert "claude.ai/customize" not in other and "Developer mode" not in other and f"{SITE}/mcp" in other
     listed = browser(store, claude_listing="https://claude.ai/directory/connectors/Bridge",
                      chatgpt_listing="https://chatgpt.com/plugins/x")
-    assert 'href="https://claude.ai/directory/connectors/Bridge"' in listed.post(
-        f"/join/{invite}", data={"ai": "claude"}).text
+    assert listed.post(f"/join/{invite}", data={"ai": "claude"}, follow_redirects=False).headers[
+        "location"] == "https://claude.ai/directory/connectors/Bridge"
     chatgpt = listed.post(f"/join/{invite}", data={"ai": "chatgpt"}).text
     assert 'href="https://chatgpt.com/plugins/x"' in chatgpt and "Developer mode" not in chatgpt
+
+
+def test_the_allow_page_says_what_to_do_next(store, clock):
+    clock.t = time.time()
+    b = browser(store)
+    client = b.post("/register", json={"redirect_uris": [CALLBACK], "client_name": "Claude",
+                                       "token_endpoint_auth_method": "none"}).json()
+    asked = b.get("/authorize", params={"response_type": "code", "client_id": client["client_id"],
+                                        "redirect_uri": CALLBACK, "code_challenge": "x" * 43,
+                                        "code_challenge_method": "S256", "state": "s"}, follow_redirects=False)
+    page = b.get(asked.headers["location"]).text
+    assert "open a new chat there" in page and "On Bridge, find me someone to" in page
 
 
 def test_no_page_can_be_framed_or_run_a_script_of_its_own(store):
@@ -771,7 +782,7 @@ def test_an_invite_pressed_for_claude_or_chatgpt_goes_only_to_that_app(store, cl
         b = browser(store)
         b.get(f"/join/{invite}")
         if press:
-            b.post(f"/join/{invite}", data={"ai": press})
+            b.post(f"/join/{invite}", data={"ai": press}, follow_redirects=False)
         client = b.post("/register", json={"redirect_uris": [callback], "client_name": "An app",
                                            "token_endpoint_auth_method": "none"}).json()
         asked = b.get("/authorize", params={"response_type": "code", "client_id": client["client_id"],

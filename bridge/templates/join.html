@@ -19,10 +19,12 @@ ChatGPT{% if not chatgpt_listing %} (a paid plan), in a computer's browser every
 cannot connect yet{% endif %}. No email, no password: you press Allow once.</li>
 <li>Your AI account must be yours alone: anyone who uses it can say yes as you.</li>
 </ul>
-<form method="post">
-<button type="submit" name="ai" value="claude">Join with Claude</button>
+<form method="post" rel="noopener">
+<button type="submit" name="ai" value="claude" formtarget="_blank">Join with Claude</button>
 <button type="submit" name="ai" value="chatgpt">Join with ChatGPT</button>
 <button type="submit" name="ai" value="other">Another AI</button>
 </form>
+<p class="muted">Claude opens in a new tab: press Add, Connect, then Allow. If it asks you to sign in first, sign in,
+then come back here and press Join with Claude again.</p>
 <p class="muted"><a href="/privacy">Who sees what</a></p>
 {% endblock %}
