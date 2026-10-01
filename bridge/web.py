@@ -92,6 +92,8 @@ def create_app(store: Store, *, base_url: str, operator: str = "", claude_listin
                                                               chatgpt_listing=chatgpt_listing, **context),
                                 status_code=status)
         response.headers["Content-Security-Policy"] = POLICY
+        # A proxy passes it as it is: Cloudflare wrote its analytics script into every page (review).
+        response.headers["Cache-Control"] = "no-transform"
         return response
 
     def remember(response: Response, code: str, ai: str = "") -> Response:
@@ -155,7 +157,7 @@ def create_app(store: Store, *, base_url: str, operator: str = "", claude_listin
             response = page("allow.html", ref=ref, app=(info.get("client_name") or "An app")[:60],
                             host=urlparse(waiting["redirect_uri"]).hostname or "",
                             community=community, small=bool(community) and net.small(store, community["id"]))
-            response.headers["Cache-Control"] = "no-store"
+            response.headers["Cache-Control"] = "no-store, no-transform"
             return response
         if form.get("choice") != "allow":
             gone = net.deny(store, ref) or waiting

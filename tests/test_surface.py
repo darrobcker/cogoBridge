@@ -575,6 +575,17 @@ def test_no_page_can_be_framed_or_run_a_script_of_its_own(store):
         assert not re.search(r"<script(?![^>]*\bsrc=)|\son[a-z]+=", page.read_text()), page.name
 
 
+def test_no_page_may_be_rewritten_on_the_way(store):
+    """Cloudflare wrote its analytics script into every page on the way to the browser: a request to another site,
+    which the content policy then blocked, with an error on every visit (review). no-transform tells a proxy to pass a
+    page as it is."""
+    _, invite = net.create_community(store, net.new_person(store), "Friends")
+    b = browser(store)
+    for response in (b.get("/"), b.get("/privacy"), b.get(f"/join/{invite}"), b.post(f"/join/{invite}"),
+                     b.get("/join/nope"), b.get("/allow?r=nope"), b.get("/nope")):
+        assert "no-transform" in response.headers["cache-control"], response.url
+
+
 def test_every_answer_says_what_it_is_and_where_it_came_from_stays_unsaid(store):
     """A browser takes a file for what its type says, never for what it looks like, and a link followed from here
     tells the next site nothing of where the visitor came from."""
@@ -670,7 +681,7 @@ def test_files_say_how_long_to_keep_them(store):
     assert b.get("/static/favicon.ico?v=3").headers["cache-control"] == "public, max-age=31536000, immutable"
     assert b.get("/static/favicon.ico").headers["cache-control"] == "public, max-age=86400"
     assert b.get("/favicon.ico").headers["cache-control"] == "public, max-age=86400"
-    assert "cache-control" not in b.get("/").headers                     # pages are the server's own, every time
+    assert b.get("/").headers["cache-control"] == "no-transform"         # pages are the server's own, every time
 
 
 def test_plain_http_goes_to_the_address_itself_and_browsers_are_told_to_stay(store):
@@ -740,7 +751,7 @@ def test_the_allow_page_names_the_app_where_it_returns_and_the_community(store, 
     page = b.get(asked.headers["location"])
     assert "&lt;b&gt;Claude&lt;/b&gt;" in page.text and "x" * 60 not in page.text        # escaped, and cut
     assert "app.test" in page.text and "<strong>Friends</strong>" in page.text
-    assert "Fewer than ten" in page.text and page.headers["cache-control"] == "no-store"
+    assert "Fewer than ten" in page.text and page.headers["cache-control"] == "no-store, no-transform"
     assert page.text.index("read everything") < page.text.index("<button")
     ref = parse_qs(urlparse(asked.headers["location"]).query)["r"][0]
     cancelled = b.post("/allow", data={"r": ref, "choice": "deny"}, follow_redirects=False)
