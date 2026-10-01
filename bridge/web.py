@@ -45,7 +45,15 @@ class _Kept(StaticFiles):
 
 
 AIS = ("claude", "chatgpt")         # anything else is "another AI"
-INVITE = "bridge_invite"        # the cookie: an invite code, and nothing else (PROTOCOL.md §5)
+INVITE, AI = "bridge_invite", "bridge_ai"   # the cookies: an invite code, and the app pressed for; no more (§5)
+# Where each app's sign-in returns. An invite pressed for one of these goes only to a sign-in that returns there, so
+# someone else's app, allowed by a person tricked into it, cannot take the community along (review).
+RETURNS = {"claude": ("claude.ai", "claude.com"), "chatgpt": ("chatgpt.com", "openai.com")}
+
+
+def _their_app(ai: str, redirect_uri: str) -> bool:
+    host = urlparse(redirect_uri).hostname or ""
+    return ai not in RETURNS or any(host == d or host.endswith("." + d) for d in RETURNS[ai])
 
 
 def _version() -> str:
@@ -86,9 +94,15 @@ def create_app(store: Store, *, base_url: str, operator: str = "", claude_listin
         response.headers["Content-Security-Policy"] = POLICY
         return response
 
-    def remember(response: Response, code: str) -> Response:
-        # Lax: an Allow form posted from another site does not carry it (PROTOCOL.md §5).
-        response.set_cookie(INVITE, code, max_age=86400, httponly=True, samesite="lax", secure=base.startswith("https"))
+    def remember(response: Response, code: str, ai: str = "") -> Response:
+        # Lax: an Allow form posted from another site does not carry them (PROTOCOL.md §5). A page only viewed
+        # forgets an app pressed for on another.
+        secure = base.startswith("https")
+        response.set_cookie(INVITE, code, max_age=86400, httponly=True, samesite="lax", secure=secure)
+        if ai:
+            response.set_cookie(AI, ai, max_age=86400, httponly=True, samesite="lax", secure=secure)
+        else:
+            response.delete_cookie(AI, httponly=True, samesite="lax", secure=secure)
         return response
 
     async def home(request: Request) -> Response:
@@ -122,7 +136,7 @@ def create_app(store: Store, *, base_url: str, operator: str = "", claude_listin
         ai = ai if ai in AIS else "other"
         # A press, not a person: counted by the AI chosen, so presses can be read against Allows and first calls.
         net.log_call(store, f"join-page {ai} {community['id']}")
-        return remember(page("connect.html", community=community, ai=ai, link=link), community["invite_code"])
+        return remember(page("connect.html", community=community, ai=ai, link=link), community["invite_code"], ai)
 
     async def allow(request: Request) -> Response:
         """An app's sign-in: one button. The page names the app, where it sends the person back, and the community
@@ -132,10 +146,12 @@ def create_app(store: Store, *, base_url: str, operator: str = "", claude_listin
         waiting = net.sign_in_waiting(store, ref) if ref else None
         if waiting is None:
             return page("expired.html", 400)
+        invite = request.cookies.get(INVITE, "")[:40]
+        if not _their_app(request.cookies.get(AI, ""), waiting["redirect_uri"]):
+            invite = ""
         if request.method != "POST":
             info = json.loads(net.client(store, waiting["client_id"]) or "{}")
-            community = store.one("SELECT id, name FROM communities WHERE invite_code=?",
-                                  request.cookies.get(INVITE, "")[:40])
+            community = store.one("SELECT id, name FROM communities WHERE invite_code=?", invite)
             response = page("allow.html", ref=ref, app=(info.get("client_name") or "An app")[:60],
                             host=urlparse(waiting["redirect_uri"]).hostname or "",
                             community=community, small=bool(community) and net.small(store, community["id"]))
@@ -145,7 +161,7 @@ def create_app(store: Store, *, base_url: str, operator: str = "", claude_listin
             gone = net.deny(store, ref) or waiting
             return RedirectResponse(construct_redirect_uri(gone["redirect_uri"], error="access_denied",
                                                            state=gone["state"]), status_code=303)
-        allowed = net.allow(store, ref, request.cookies.get(INVITE, ""))
+        allowed = net.allow(store, ref, invite)
         if allowed is None:
             return page("expired.html", 400)
         data, code = allowed

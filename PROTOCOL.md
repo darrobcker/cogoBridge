@@ -170,8 +170,9 @@ the app then holds is the person. Nobody exists, or counts in an owner's number,
 the first tool call through a new connection makes the person, subject to the limits in §4.
 
 An invite page remembers its invite code in that browser for a day, in a cookie holding the code and nothing
-else, and sends the person on to add Bridge to their AI. The Allow page names that community, and the first
-call joins it. Where the code did not come through — another browser, an app's own sign-in window, an invite
+else, and sends the person on to add Bridge to their AI; pressing Join with Claude or with ChatGPT remembers which,
+in a second cookie, and the code then goes only to a sign-in that returns to that app. The Allow page names that
+community, and the first call joins it. Where the code did not come through — another browser, an app's own sign-in window, an invite
 replaced meanwhile — the person pastes the invite link into the chat and says "join this", as anyone already in
 does. The invite page first asks whether the person already uses Bridge, and says how to join from their
 chat if so. Later memberships come from `community` join or create.

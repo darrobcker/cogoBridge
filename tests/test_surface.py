@@ -749,6 +749,36 @@ def test_the_allow_page_names_the_app_where_it_returns_and_the_community(store, 
     assert b.post("/allow", data={"r": ref, "choice": "allow"}, follow_redirects=False).status_code == 400
 
 
+def test_an_invite_pressed_for_claude_or_chatgpt_goes_only_to_that_app(store, clock):
+    """For a day after the invite page, any sign-in allowed in that browser took its community with it: someone
+    else's app, allowed by a person tricked into it, joined (review, from Bridge Chats). Who pressed Join with Claude
+    or ChatGPT gives it only to a sign-in that returns to that app; a page only viewed, or Another AI, as before."""
+    clock.t = time.time()
+    community_id, invite = net.create_community(store, net.new_person(store), "Friends")
+
+    def allowed(press: str | None, callback: str) -> bool:
+        b = browser(store)
+        b.get(f"/join/{invite}")
+        if press:
+            b.post(f"/join/{invite}", data={"ai": press})
+        client = b.post("/register", json={"redirect_uris": [callback], "client_name": "An app",
+                                           "token_endpoint_auth_method": "none"}).json()
+        asked = b.get("/authorize", params={"response_type": "code", "client_id": client["client_id"],
+                                            "redirect_uri": callback, "code_challenge": "x" * 43,
+                                            "code_challenge_method": "S256", "state": "s"}, follow_redirects=False)
+        ref = parse_qs(urlparse(asked.headers["location"]).query)["r"][0]
+        named = "Friends" in b.get(f"/allow?r={ref}").text
+        b.post("/allow", data={"r": ref, "choice": "allow"}, follow_redirects=False)
+        kept = store.one("SELECT invite FROM grants ORDER BY created_t DESC, rowid DESC LIMIT 1")["invite"]
+        assert named is bool(kept), (press, callback)
+        return bool(kept)
+    claude, chatgpt, other = ("https://claude.ai/api/mcp/auth_callback",
+                              "https://chatgpt.com/connector_platform_oauth_redirect", "https://evil.test/cb")
+    assert allowed("claude", claude) and not allowed("claude", other) and not allowed("claude", chatgpt)
+    assert allowed("chatgpt", chatgpt) and not allowed("chatgpt", other)
+    assert allowed("other", other) and allowed(None, other)
+
+
 def test_an_allow_posted_from_another_site_joins_nothing(store, clock):
     """The invite cookie is SameSite=Lax, so a form another site posts to the Allow page arrives without it: whoever
     started that sign-in gets a new account in no community, which they could have had anyway."""
