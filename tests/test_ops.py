@@ -256,12 +256,15 @@ class Watched(http.server.BaseHTTPRequestHandler):
     def do_PUT(self):
         body = self.rfile.read(int(self.headers["Content-Length"]))
         name = self.path.split("?")[0]
-        status = 500 if Watched.put_fails else 409 if name in Watched.kept else 201
+        status, code = (500, "") if Watched.put_fails else (403, "UnauthorizedBlobOverwrite") if name in Watched.kept \
+            else (201, "")                                       # what Azure answers an upload-only signature
         if self.banned() or self.headers.get("x-ms-blob-type") != "BlockBlob" or not self.path.endswith("?sig=s3cret"):
-            status = 403
+            status, code = 403, "AuthenticationFailed"
         if status == 201:
             Watched.kept[name] = body
         self.send_response(status)
+        if code:
+            self.send_header("x-ms-error-code", code)
         self.end_headers()
 
     def log_message(self, *args):

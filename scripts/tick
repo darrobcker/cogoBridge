@@ -90,8 +90,10 @@ def copy(state: dict) -> bool:
     try:
         urllib.request.urlopen(request, timeout=300).close()
     except urllib.error.HTTPError as e:
-        if e.code != 409:       # 409: it is there already, from a run whose answer was lost
-            print(f"BACKUP COPY FAILED: {newest.name}: HTTP {e.code}", file=sys.stderr)
+        # There already, from a run whose answer was lost: Azure refuses to overwrite with an upload-only signature.
+        if e.headers.get("x-ms-error-code") != "UnauthorizedBlobOverwrite":
+            print(f"BACKUP COPY FAILED: {newest.name}: HTTP {e.code} {e.headers.get('x-ms-error-code', '')}",
+                  file=sys.stderr)
             return False
     except Exception as e:
         print(f"BACKUP COPY FAILED: {newest.name}: {type(e).__name__}", file=sys.stderr)
