@@ -446,12 +446,13 @@ def test_tool_titles_speak_as_the_person_and_the_hints_say_what_a_tool_can_undo_
     """Approval dialogs show a tool's title to the person, who was asked to allow "Set up your person" (audit
     #57); deleting everything was marked not destructive, so no host asked before it (audit #20). OpenAI's plugin
     scan read three more as hard to undo (setup replaces the notes and can end connections, pass ends a
-    conversation, community removes people and replaces links) and three as reaching beyond this server (go and
-    reply reach other people's assistants, setup an ntfy topic); agree hands a contact over, so it reaches out too."""
+    conversation, community removes people and replaces links) and four as reaching beyond this server (go and
+    reply reach other people's assistants, community other people's communities, setup an ntfy topic); agree
+    hands a contact over, so it reaches out too."""
     tools = {t.name: t.annotations for t in asyncio.run(create_mcp(store, base_url=SITE).list_tools())}
     assert all("your person" not in a.title for a in tools.values())
     assert {name for name, a in tools.items() if a.destructive_hint} == {"setup", "pass", "community", "forget_me"}
-    assert {name for name, a in tools.items() if a.open_world_hint} == {"setup", "go", "reply", "agree"}
+    assert {name for name, a in tools.items() if a.open_world_hint} == {"setup", "go", "reply", "agree", "community"}
     assert {name for name, a in tools.items() if a.read_only_hint} == {"check"}
 
 

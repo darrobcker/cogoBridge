@@ -731,7 +731,7 @@ def create_mcp(store: Store, *, base_url: str, operator: str = "", version: str 
             raise net.Refused("give at least one id from `check`")
         return "\n".join(results)
 
-    @tool("My communities", destructive=True)
+    @tool("My communities", destructive=True, open_world=True)
     @_refusals
     def community(action: Literal["create", "join", "invite", "leave", "report", "rename", "new_link", "remove",
                                   "dismiss"],
