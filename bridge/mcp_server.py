@@ -584,10 +584,12 @@ def create_mcp(store: Store, *, base_url: str, operator: str = "", version: str 
                 "it to themselves: whoever uses it becomes them.")
 
     # A host's approval dialog shows the title to the person, so it speaks as them: "Set up your person" left a
-    # person working out who that was (audit #57). Only forget_me destroys, so only it always asks (audit #20).
-    def tool(title: str, name: str | None = None, read_only: bool = False, destructive: bool = False):
+    # person working out who that was (audit #57). Destructive: what is hard to undo, so hosts ask first (audit #20;
+    # OpenAI's scan). Open world: what reaches other people's assistants, or ntfy.
+    def tool(title: str, name: str | None = None, read_only: bool = False, destructive: bool = False,
+             open_world: bool = False):
         return mcp.tool(name=name, annotations=ToolAnnotations(title=title, readOnlyHint=read_only,
-                                                               destructiveHint=destructive, openWorldHint=False))
+                                                               destructiveHint=destructive, openWorldHint=open_world))
 
     @tool("See what's waiting for me", read_only=True)
     @_refusals
@@ -599,7 +601,7 @@ def create_mcp(store: Store, *, base_url: str, operator: str = "", version: str 
         net.sweep(store)
         return render_check(net.inbox(store, pid, passed=passed, needs_from=needs_from or None), store.now())
 
-    @tool("Set up my Bridge")
+    @tool("Set up my Bridge", destructive=True, open_world=True)
     @_refusals
     def setup(name: str = "", contact: str = "", about: str = "", notify: str = "", another_app: bool = False,
               new_link: bool = False, code: str = "", ctx: Context = None) -> str:
@@ -652,7 +654,7 @@ def create_mcp(store: Store, *, base_url: str, operator: str = "", version: str 
                 f"Nudges: {'on' if net.nudges_on(me['notify']) else 'off'}."
                 + after + (f"\nIf you have not yet, {_SECOND}" if second else "") + (f"\n{_STANDING}" if first else ""))
 
-    @tool("Post what I'm looking for")
+    @tool("Post what I'm looking for", open_world=True)
     @_refusals
     def go(text: str, community_id: str = "", people: int = 1, days: float = 7, ctx: Context = None) -> str:
         """Sends a need to every community the person is in, or only to `community_id`, for other members'
@@ -680,7 +682,7 @@ def create_mcp(store: Store, *, base_url: str, operator: str = "", version: str 
                 # words on hearing back (review).
                 + (f"\n{_STANDING}" if not me["about"] else ""))
 
-    @tool("Reply for me")
+    @tool("Reply for me", open_world=True)
     @_refusals
     def reply(to: str, text: str, agree: bool = False, revision: int | None = None, ctx: Context = None) -> str:
         """Writes to the other side. `to` is a need id (n-…), which opens a conversation, or a conversation
@@ -697,7 +699,7 @@ def create_mcp(store: Store, *, base_url: str, operator: str = "", version: str 
                    "conversation as it stands: if it still holds, `agree` again." if outcome == net.CLEARED
                    else " " + _AGREED[outcome] if outcome else ""))
 
-    @tool("Say yes for me")
+    @tool("Say yes for me", open_world=True)
     @_refusals
     def agree(conversation_id: str, revision: int | None = None, one_more: bool = False, withdraw: bool = False,
               ctx: Context = None) -> str:
@@ -712,7 +714,7 @@ def create_mcp(store: Store, *, base_url: str, operator: str = "", version: str 
                     else "There was no yes of theirs to take back.")
         return _AGREED[net.agree(store, who(ctx, "agree"), conversation_id, revision=revision, one_more=one_more)]
 
-    @tool("Pass for me", name="pass")
+    @tool("Pass for me", name="pass", destructive=True)
     @_refusals
     def pass_(ref: str, ctx: Context = None) -> str:
         """Hides needs (n-…) that reached the person, closes their own, or leaves conversations (c-…). One id,
@@ -729,7 +731,7 @@ def create_mcp(store: Store, *, base_url: str, operator: str = "", version: str 
             raise net.Refused("give at least one id from `check`")
         return "\n".join(results)
 
-    @tool("My communities")
+    @tool("My communities", destructive=True)
     @_refusals
     def community(action: Literal["create", "join", "invite", "leave", "report", "rename", "new_link", "remove",
                                   "dismiss"],
