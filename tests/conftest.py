@@ -112,5 +112,6 @@ def recode(store, community: str, code: str) -> None:
     owner = store.one("SELECT created_by FROM communities WHERE id=?", community)["created_by"]
     key = net._community_key(store, owner, community)
     store.exec("UPDATE communities SET invite_hash=?, invite_code=?, link_key=? WHERE id=?", vault.code_hash(code),
-               vault.lock_text(key, code, "invite code"), vault.lock(net._link_key(code), key, "community key"),
+               vault.lock_text(key, code, "invite code"),
+               vault.lock(net._link_key(code, community), key, "community key"),
                community)

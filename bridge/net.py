@@ -195,9 +195,9 @@ def _community_name_for(store: Store, person_id: str, community_id: str) -> str:
         return ""
 
 
-def _link_key(code: str) -> bytes:
+def _link_key(code: str, community_id: str) -> bytes:
     """What a community's invite code opens: its key, the way a newcomer gets it."""
-    return vault.from_code(code, "invite")
+    return vault.from_code(code, "invite", community_id)
 
 
 def _need_key(store: Store, person_id: str, need) -> bytes:
@@ -751,7 +751,7 @@ def link_code(store: Store, person_id: str, *, replace: bool) -> str:
         store.exec("DELETE FROM link_codes WHERE person_id=? AND used_t IS NULL", person_id)
         store.exec("INSERT INTO link_codes(hash, person_id, replace, created_t, person_key) VALUES (?,?,?,?,?)",
                    _code_hash(raw), person_id, int(replace), store.now(),
-                   vault.lock(vault.from_code(raw, "link code"), private, "person key") if private else "")
+                   vault.lock(vault.from_code(raw, "link code", person_id), private, "person key") if private else "")
     return "-".join(raw[i:i + 4] for i in range(0, LINK_CODE, 4))
 
 
@@ -774,7 +774,7 @@ def use_link_code(store: Store, person_id: str, grant_id: str, code: str, token:
             raise dead
         target = row["person_id"]
         typed = "".join(ch for ch in code.lower() if ch in _ALPHABET)
-        theirs = vault.unlock(vault.from_code(typed, "link code"), row["person_key"], "person key") \
+        theirs = vault.unlock(vault.from_code(typed, "link code", target), row["person_key"], "person key") \
             if row["person_key"] else None
         connection = _connection_from(store, token)
         if target == person_id:
@@ -869,7 +869,7 @@ def create_community(store: Store, by: str, name: str) -> tuple[str, str]:
         store.exec("INSERT INTO communities(id, name, created_by, invite_hash, invite_code, link_key, created_t) "
                    "VALUES (?,?,?,?,?,?,?)", cid, vault.lock_text(key, name, "community name"), by,
                    vault.code_hash(code), vault.lock_text(key, code, "invite code"),
-                   vault.lock(_link_key(code), key, "community key"), store.now())
+                   vault.lock(_link_key(code, cid), key, "community key"), store.now())
         join(store, by, cid, key=key)
     return cid, code
 
@@ -899,7 +899,7 @@ def community_by_invite(store: Store, invite: str):
     code = next((code for forms in words for code in forms if code in found), None)
     if code is None:
         return None
-    key = vault.unlock(_link_key(code), found[code]["link_key"], "community key")
+    key = vault.unlock(_link_key(code, found[code]["id"]), found[code]["link_key"], "community key")
     return {**dict(found[code]), "code": code, "key": key,
             "name": vault.unlock_text(key, found[code]["name"], "community name")}
 
@@ -1125,8 +1125,8 @@ def invite_code(store: Store, person_id: str, community_id: str, *, new: bool = 
             raise Refused("only whoever started this community can replace its link")
         code = _new_invite_code()
         store.exec("UPDATE communities SET invite_hash=?, invite_code=?, link_key=? WHERE id=?", vault.code_hash(code),
-                   vault.lock_text(key, code, "invite code"), vault.lock(_link_key(code), key, "community key"),
-                   community_id)
+                   vault.lock_text(key, code, "invite code"), vault.lock(_link_key(code, community_id), key,
+                                                                         "community key"), community_id)
     return code
 
 
@@ -2060,6 +2060,8 @@ def _lock_everything(db: sqlite3.Connection) -> None:
             db.execute(statement)
         rows = lambda sql, *args: db.execute(sql, args).fetchall()         # noqa: E731
         private, public, card = {}, {}, {}
+        # Someone deleted holds nothing, and kept nothing: whatever an older version left in their row goes.
+        db.execute("UPDATE people SET name='', contact='', about='' WHERE deleted_t IS NOT NULL")
         for p in rows("SELECT * FROM people WHERE deleted_t IS NULL"):
             private[p["id"]], public[p["id"]] = vault.new_pair()
             mine, card[p["id"]] = vault.self_key(private[p["id"]]), {"name": p["name"], "contact": p["contact"]}
@@ -2076,7 +2078,7 @@ def _lock_everything(db: sqlite3.Connection) -> None:
             db.execute("INSERT INTO communities9 VALUES (?,?,?,?,?,?,?)", (
                 c["id"], vault.lock_text(key, c["name"], "community name"), c["created_by"],
                 vault.code_hash(c["invite_code"]), vault.lock_text(key, c["invite_code"], "invite code"),
-                vault.lock(_link_key(c["invite_code"]), key, "community key"), c["created_t"]))
+                vault.lock(_link_key(c["invite_code"], c["id"]), key, "community key"), c["created_t"]))
         db.execute("DROP TABLE communities")
         db.execute("ALTER TABLE communities9 RENAME TO communities")
         for m in rows("SELECT * FROM memberships WHERE banned_t IS NULL"):
