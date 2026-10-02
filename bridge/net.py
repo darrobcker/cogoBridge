@@ -2081,7 +2081,10 @@ def _lock_everything(db: sqlite3.Connection) -> None:
                 vault.lock(_link_key(c["invite_code"], c["id"]), key, "community key"), c["created_t"]))
         db.execute("DROP TABLE communities")
         db.execute("ALTER TABLE communities9 RENAME TO communities")
+        # A membership of a community that is not there, as an old version left one, holds no key to anything.
         for m in rows("SELECT * FROM memberships WHERE banned_t IS NULL"):
+            if m["community_id"] not in community:
+                continue
             db.execute("UPDATE memberships SET key=? WHERE person_id=? AND community_id=?",
                        (seal(m["person_id"], community[m["community_id"]], "community"), m["person_id"],
                         m["community_id"]))

@@ -2975,6 +2975,9 @@ def test_a_live_database_from_before_comes_over_whole_and_locked(tmp_path, keys)
     db.execute("INSERT INTO communities VALUES ('g-holly', 'Hollybank Climbers', 'p-ola', 'Ab_-9xYz12Qq', ?)", (t,))
     db.executemany("INSERT INTO memberships(person_id, community_id, joined_t) VALUES (?, 'g-holly', ?)",
                    [(p, t) for p in ("p-ola", "p-rae", "p-sam")])
+    # The live database holds a membership of a community no longer there, from an old version (2026-10-02).
+    db.execute("INSERT INTO memberships(person_id, community_id, joined_t) VALUES ('p-sam', 'c_hNuE4TWSta7FXJc-', ?)",
+               (t,))
     db.executemany("INSERT INTO needs(id, author_id, text, created_t, expires_t, wants, deals) VALUES (?,?,?,?,?,1,?)",
                    [("n-climb", "p-ola", "A climbing partner at the sea cliffs", t, t + 7e5, 1),
                     ("n-bread", "p-ola", "A sourdough starter", t, t + 7e5, 0)])
