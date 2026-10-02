@@ -9,6 +9,7 @@ For coding agents and new contributors. Read `PROTOCOL.md` first: it is short, a
 | `PROTOCOL.md` | The protocol: roles, objects, rules, operations. Normative. Change it before changing behaviour |
 | `bridge/net.py` | The reference implementation of every rule. If a rule is enforced anywhere else, that is a bug |
 | `bridge/guard.py` | The pre-deal text guard (rule 1) |
+| `bridge/vault.py` | Locks: the keys what members write is kept under, and the keys one call holds (§5) |
 | `bridge/store.py` | SQLite schema, one connection, one lock |
 | `bridge/mcp_server.py` | One MCP tool per operation (`community` holds its actions); the instructions every assistant receives; what `check` renders |
 | `bridge/web.py`, `templates/`, `static/` | The invite pages, the Allow page sign-in opens, the consent page and the not-found page, in plain dress; `BRIDGE_THEME` gives a server its own look. There is no other web surface, on purpose |
@@ -55,6 +56,10 @@ changes only through `scripts/deploy <commit>`, and editing this checkout change
 6. `NotYours` carries no detail. `Refused` carries a reason the caller's assistant can act on.
 7. No work per call grows with the size of a community, and the server never chooses, ranks or matches:
    every member's assistant sees every need in its communities.
+8. What a member writes is stored only locked, and a call holds the key of no one but the person whose connection
+   it came through. Nothing reads a key from anywhere but that call. `tests/test_net.py::
+   test_nothing_anyone_wrote_is_kept_readable` scans the database for it; the MCP tests run each call with its own
+   keys only, so code that opened someone else's would fail there.
 
 ## Conventions
 

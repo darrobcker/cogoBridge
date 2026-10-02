@@ -4,9 +4,12 @@ import secrets
 
 import pytest
 
-from bridge import net
+from bridge import net, vault
 
 T0 = 1_790_000_000.0
+# The suite makes hundreds of communities and codes, each a scrypt derivation: the work factor is what it would wait
+# on, not the scheme, which test_vault checks at the real one.
+vault.SCRYPT_N = 2 ** 8
 
 
 class Clock:
@@ -19,6 +22,14 @@ class Clock:
     def advance(self, seconds: float) -> float:
         self.t += seconds
         return self.t
+
+
+@pytest.fixture(autouse=True)
+def keys():
+    """Every key a test makes, for any of its threads: a call made through a connection holds only its own."""
+    vault._SHARED = {}
+    yield vault._SHARED
+    vault._SHARED = None
 
 
 @pytest.fixture
@@ -37,8 +48,10 @@ def own_link(store, person_id: str) -> str:
     """A connector URL secret of a person's own, as the server gave everyone before sign-in: nothing makes one now,
     and the ones handed out still work (PROTOCOL.md §5)."""
     secret = secrets.token_urlsafe(24)
-    store.exec("INSERT INTO connectors(secret_hash, person_id, created_t) VALUES (?,?,?)", net._hash(secret),
-               person_id, store.now())
+    private = vault.key_or_none(person_id)
+    store.exec("INSERT INTO connectors(secret_hash, person_id, created_t, person_key) VALUES (?,?,?,?)",
+               net._hash(secret), person_id, store.now(),
+               vault.lock(vault.from_secret(secret, "connector"), private, "person key") if private else "")
     return secret
 
 
@@ -92,3 +105,12 @@ class World:
 @pytest.fixture
 def world(store) -> World:
     return World(store)
+
+
+def recode(store, community: str, code: str) -> None:
+    """A community's invite code set by hand, as one made before codes were lowercase: locked as the server keeps it."""
+    owner = store.one("SELECT created_by FROM communities WHERE id=?", community)["created_by"]
+    key = net._community_key(store, owner, community)
+    store.exec("UPDATE communities SET invite_hash=?, invite_code=?, link_key=? WHERE id=?", vault.code_hash(code),
+               vault.lock_text(key, code, "invite code"), vault.lock(net._link_key(code), key, "community key"),
+               community)

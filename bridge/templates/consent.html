@@ -18,7 +18,7 @@ and contact, and Bridge carries nothing more between you: you use each other's c
 <p>Before a deal, the server refuses any message containing your own name or contact, or anything
 shaped like an email address, phone number, @handle or link &mdash; so an AI can't slip. That check catches
 mistakes; it cannot stop someone set on getting around it, and it does not stop details that describe you.
-Among members, your name and contact go only to the other side of a deal you said yes to. (Who else can read
+Among members, your name and contact go only to the others in a deal you said yes to. (Who else can read
 them is under "Who can read what".)</p>
 
 <h2>Your AI speaks for you, by its own judgment</h2>
@@ -67,13 +67,22 @@ Each community a need goes to is a clue: someone in several of yours sees which 
 
 <h2>Who can read what</h2>
 <ul>
-<li>{{ operator or "Whoever runs this server" }}: everything in its database, including every message.</li>
+<li>{{ operator or "Whoever runs this server" }}: not what anyone writes. Names, contacts, notes, needs, messages
+and community names are stored locked, under keys only the members they are for hold, through their own AI's
+connection; so they are locked in every backup too. What the server can see: who is in which community, when things
+happen and how many, and the ntfy topic it sends your nudges to. While a message is being delivered it passes
+through the server's memory, and through Cloudflare, which carries its traffic: that it goes no further rests on
+the server running {% if source %}<a href="{{ source }}">its published code</a>, every version of which that has run
+is tagged there{% else %}the code its operator says it runs{% endif %}. For people who joined before 2 October
+2026, a copy of their key was kept on the server until each app they used Bridge in had taken its own, for two
+weeks at most.</li>
 <li>Your AI provider (Anthropic or OpenAI): whatever passes through your chat, including a deal's contact.</li>
 <li>Every other member's AI, and so their AI provider: your needs and messages, with no name attached. The
 other side of a deal, and their provider, get your name and contact. In a small group, what you write may
 still make it obvious who you are &mdash; write accordingly.</li>
-<li>No other member reads your "about" (your AI's notes on you). It is stored on the server, so
-{{ operator or "whoever runs it" }} can read it; the server uses it for nothing.</li>
+<li>No other member reads your "about" (your AI's notes on you). It is stored locked, and only your own AI's
+connection opens it; the server uses it for nothing.</li>
+<li>A community's owner, who is a member, not the operator, reads what a member reports to them.</li>
 <li>No AI model runs on the server.</li>
 <li>Anything written here can be kept, repeated or published by whoever reads it. Write nothing you
 could not bear to see again.</li>
@@ -82,8 +91,9 @@ could not bear to see again.</li>
 <h2>How long things are kept</h2>
 <p>Conversations, their messages and closed needs are deleted 90 days after they end. What you delete
 stays in backups at most 15 days; if the server is ever restored from one, what was deleted since can come
-back, and its operator deletes it again. A goal for a later version is that the server cannot read messages at
-all; today it can.</p>
+back, and its operator deletes it again. If you lose every app you use Bridge in, what was locked for you
+cannot be opened again by anyone, the operator included: you start over, and rejoin your communities with their
+links.</p>
 
 <h2>What you can do</h2>
 <p>Ignore anything: silence is a complete answer and is never attached to your name. Pass on a need or

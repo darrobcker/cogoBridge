@@ -13,7 +13,9 @@ are.</li>
 {% if small %}
 <li>Fewer than ten people have ever joined it, so whoever is in it may well guess who wrote a need.</li>
 {% endif %}
-<li>{{ operator or "Whoever runs this server" }} can read everything stored here, including messages.</li>
+<li>What people write here is stored locked: only the members it is for can open it, through their own AI.
+{{ operator or "Whoever runs this server" }} cannot read what is stored{% if source %}, and runs
+<a href="{{ source }}">published code</a>{% endif %}.</li>
 <li>Claude, free plan too{% if not claude_listed %}, on a computer the first time{% endif %}; or
 ChatGPT{% if not chatgpt_listing %} (a paid plan), in a computer's browser every time: its phone app
 cannot connect yet{% endif %}. No email, no password: you press Allow once.</li>

@@ -9,11 +9,12 @@ import json
 import re
 import threading
 import time
+from pathlib import Path
 
 import pytest
-from conftest import Clock, World, agree, own_link, seen
+from conftest import T0, Clock, World, agree, own_link, recode, seen
 
-from bridge import mcp_server, net
+from bridge import mcp_server, net, vault
 
 
 def resolves(store, secret: str) -> str | None:
@@ -1728,7 +1729,7 @@ def test_a_long_invite_link_is_not_folded_whole(store):
 def test_an_old_mixed_case_invite_code_is_still_found_as_written(store):
     """Codes made before they were lowercase are on links already shared: lowering them would refuse every one."""
     community, _ = net.create_community(store, net.new_person(store), "Climbers")
-    store.exec("UPDATE communities SET invite_code='Ab_-9xYz12Qq' WHERE id=?", community)
+    recode(store, community, "Ab_-9xYz12Qq")
     for pasted in ("https://bridge.test/join/Ab_-9xYz12Qq).", "Ab_-9xYz12Qq",
                    "_https://bridge.test/join/Ab_-9xYz12Qq_", "https://bridge.test/join/Ab_-9xYz12Qq-"):
         assert net.community_by_invite(store, pasted)["id"] == community, pasted
@@ -1740,8 +1741,8 @@ def test_an_invite_finds_the_code_as_written_and_the_first_link_in_the_text(stor
     old, _ = net.create_community(store, net.new_person(store), "Old")
     folded, _ = net.create_community(store, net.new_person(store), "Folded")
     other, code = net.create_community(store, net.new_person(store), "Other")
-    store.exec("UPDATE communities SET invite_code='AbCdEfGhIjKl' WHERE id=?", old)
-    store.exec("UPDATE communities SET invite_code='abcdefghijkl' WHERE id=?", folded)
+    recode(store, old, "AbCdEfGhIjKl")
+    recode(store, folded, "abcdefghijkl")
     assert net.community_by_invite(store, "_AbCdEfGhIjKl_")["id"] == old
     assert net.community_by_invite(store, "abcdefghijkl")["id"] == folded
     for first, second, community in ((code, "AbCdEfGhIjKl", other), ("AbCdEfGhIjKl", code, old)):
@@ -1751,19 +1752,30 @@ def test_an_invite_finds_the_code_as_written_and_the_first_link_in_the_text(stor
 
 # -- connections: signing in, codes, and the older links of a person's own ------------------------------------------
 
+TOKENS: dict[str, str] = {}             # the access token each connection's app holds, by connection
+
+
 def connection(store, invite: str = "", client: str = "app") -> str:
-    """A connection as an app's sign-in makes one: Allow pressed, with the code the invite page left, if any."""
+    """A connection as an app's sign-in makes one: Allow pressed, with the code the invite page left, if any, and the
+    code traded for its tokens."""
     if not net.client(store, client):
         net.register_client(store, client, "{}")
     request = net.sign_in_request(store, {"client_id": client, "redirect_uri": "https://app.test/cb", "state": "s"})
     _, code = net.allow(store, request, invite)
-    return net.authorization_code(store, code)["grant"]
+    grant = net.authorization_code(store, code)["grant"]
+    TOKENS[grant] = net.exchange_code(store, code)[0]
+    return grant
+
+
+def first_call(store, grant: str, tool: str = "check") -> str:
+    """A tool call through that connection, with the token its app holds."""
+    return net.person_for_grant(store, grant, tool, TOKENS.get(grant, ""))
 
 
 def signed_in(store, invite: str = "") -> tuple[str, str]:
     """A connection and the person its first call made."""
     grant = connection(store, invite)
-    return grant, net.person_for_grant(store, grant, "check")
+    return grant, first_call(store, grant)
 
 
 def code_of(store, person: str, *, replace: bool = False) -> str:
@@ -1791,12 +1803,12 @@ def test_a_new_link_code_ends_every_other_connection_once_used_and_not_before(st
     grant, pid = signed_in(store)
     own = own_link(store, pid)
     code = code_of(store, pid, replace=True)
-    assert net.person_for_grant(store, grant, "check") == pid and resolves(store, own) == pid    # not used yet
+    assert first_call(store, grant, "check") == pid and resolves(store, own) == pid    # not used yet
     fresh, empty = signed_in(store)
     assert net.use_link_code(store, empty, fresh, code) == (net.MOVED, pid)
-    assert net.person_for_grant(store, fresh, "check") == pid
+    assert first_call(store, fresh, "check") == pid
     with pytest.raises(net.NotYours):
-        net.person_for_grant(store, grant, "check")
+        first_call(store, grant, "check")
     assert "ended from the chat" in refusal(store, own)
     assert not net.alive(store, empty)
 
@@ -1810,7 +1822,7 @@ def test_another_app_code_adds_a_connection_and_ends_nothing(store, world):
     joined = net.me(store, world.owner)["communities"][0]["joined"]
     assert net.use_link_code(store, empty, other, code_of(store, pid)) == (net.LINKED, pid)
     for g in (grant, other):
-        assert net.person_for_grant(store, g, "check") == pid
+        assert first_call(store, g, "check") == pid
     assert net.me(store, world.owner)["communities"][0]["joined"] == joined
     assert net.me(store, pid)["communities"][0]["id"] == world.community and not net.alive(store, empty)
 
@@ -1878,13 +1890,13 @@ def test_whoever_else_had_access_cannot_keep_a_connection_past_a_new_link(store)
     connection, the other holder's included, so they cannot ask for another."""
     mine, pid = signed_in(store)
     theirs = connection(store)
-    net.use_link_code(store, net.person_for_grant(store, theirs, "check"), theirs, code_of(store, pid))
+    net.use_link_code(store, first_call(store, theirs, "check"), theirs, code_of(store, pid))
     code = code_of(store, pid, replace=True)
     fresh, empty = signed_in(store)
     net.use_link_code(store, empty, fresh, code)
     for ended in (mine, theirs):
         with pytest.raises(net.NotYours):
-            net.person_for_grant(store, ended, "check")
+            first_call(store, ended, "check")
 
 
 def test_a_link_ended_before_its_person_deleted_themselves_says_nothing_about_it(store, clock):
@@ -1927,11 +1939,11 @@ def test_a_person_and_their_membership_are_made_at_their_ais_first_call_and_not_
     before = rows(store)
     grants = [connection(store, code) for _ in range(7)]            # allowed, never called: nobody
     assert rows(store) == before and net.me(store, owner)["communities"][0]["joined"] == 0
-    pid = net.person_for_grant(store, grants[0], "check")
+    pid = first_call(store, grants[0], "check")
     assert rows(store) == {t: n + 1 for t, n in before.items()}      # one person, membership, call
     assert net.is_member(store, pid, community) and net.me(store, owner)["communities"][0]["joined"] == 1
     assert store.one("SELECT tool FROM calls WHERE person_id=?", pid)["tool"] == "check"
-    assert net.person_for_grant(store, grants[0], "go") == pid
+    assert first_call(store, grants[0], "go") == pid
     assert rows(store)["people"] == before["people"] + 1 and rows(store)["calls"] == before["calls"] + 2
     assert "1 other person has joined" in mcp_server.render_check(net.inbox(store, owner), store.now())
 
@@ -1949,10 +1961,10 @@ def test_two_first_calls_at_once_make_one_person(store, monkeypatch):
     monkeypatch.setattr(net, "new_person", slow)
     grant, got, start = connection(store, code), [], threading.Barrier(8)
 
-    def first_call():
+    def call_once():
         start.wait()
-        got.append(net.person_for_grant(store, grant, "check"))
-    threads = [threading.Thread(target=first_call) for _ in range(8)]
+        got.append(first_call(store, grant, "check"))
+    threads = [threading.Thread(target=call_once) for _ in range(8)]
     for t in threads:
         t.start()
     for t in threads:
@@ -1966,7 +1978,7 @@ def test_an_invite_replaced_before_the_first_call_makes_someone_in_no_community(
     says to paste an invite link."""
     grant = connection(store, world.invite)
     net.invite_code(store, world.owner, world.community, new=True)
-    pid = net.person_for_grant(store, grant, "check")
+    pid = first_call(store, grant, "check")
     assert not net.me(store, pid)["communities"]
     assert "NOT IN A COMMUNITY" in mcp_server.render_check(net.inbox(store, pid), store.now())
 
@@ -1981,11 +1993,11 @@ def test_the_join_limit_counts_first_communities_by_any_door(store, clock, monke
     _, member = signed_in(store)
     net.create_community(store, member, "Elsewhere")
     net.join(store, member, community)                              # already in one: takes no place, never refused
-    made = [signed_in(store, code)[1], net.person_for_grant(store, connection(store), "check")]
+    made = [signed_in(store, code)[1], first_call(store, connection(store), "check")]
     net.join_by_invite(store, made[1], code)                        # from the chat, a first community: counted
     with pytest.raises(net.Refused, match="too many new people"):
-        net.join_by_invite(store, net.person_for_grant(store, connection(store), "check"), code)
-    late = net.person_for_grant(store, connection(store, code), "check")    # at a first call: made, joins nothing
+        net.join_by_invite(store, first_call(store, connection(store), "check"), code)
+    late = first_call(store, connection(store, code), "check")    # at a first call: made, joins nothing
     assert not net.me(store, late)["communities"]
     net.leave(store, made[0], community)
     net.join(store, made[0], community)
@@ -2004,11 +2016,11 @@ def test_the_server_makes_a_bounded_number_of_people_with_no_invite_a_day(store,
         signed_in(store)
     waiting = connection(store)
     with pytest.raises(net.Refused, match="no more new people without an invite today"):
-        net.person_for_grant(store, waiting, "check")
+        first_call(store, waiting, "check")
     _, code = net.create_community(store, net.new_person(store), "Climbers")
     assert net.me(store, signed_in(store, code)[1])["communities"]
     clock.advance(86400)
-    assert net.person_for_grant(store, waiting, "check")
+    assert first_call(store, waiting, "check")
 
 
 def test_the_join_limit_costs_the_same_however_many_joined_elsewhere_today(store, monkeypatch):
@@ -2025,7 +2037,7 @@ def test_the_join_limit_costs_the_same_however_many_joined_elsewhere_today(store
         grant = connection(store, code)
         looked.append([])
         monkeypatch.setattr(store, "one", lambda *a, now=looked[-1]: now.append(a) or one(*a))
-        net.person_for_grant(store, grant, "check")
+        first_call(store, grant, "check")
         monkeypatch.setattr(store, "one", one)
     assert len(looked[0]) == len(looked[1])
 
@@ -2075,7 +2087,7 @@ def test_a_link_whose_person_row_is_gone_refuses_and_makes_nobody(store):
     with pytest.raises(net.Refused):
         net.person_for_connector(store, link, "check")
     with pytest.raises(net.Refused):
-        net.person_for_grant(store, grant, "check")
+        first_call(store, grant, "check")
     assert rows(store) == before
 
 
@@ -2130,15 +2142,15 @@ def test_access_tokens_last_a_week_and_renew(store, clock):
 def test_giving_back_a_token_or_deleting_oneself_ends_the_connection(store):
     code, grant = allowed(store)
     access, refresh = net.exchange_code(store, code)
-    pid = net.person_for_grant(store, grant, "check")
+    pid = first_call(store, grant, "check")
     net.revoke(store, refresh)
     assert net.access(store, access) is None and net.renewal(store, refresh) is None
     with pytest.raises(net.NotYours):
-        net.person_for_grant(store, grant, "check")
+        first_call(store, grant, "check")
     grant, pid = signed_in(store)
     net.forget_me(store, pid, "delete everything")
     with pytest.raises(net.NotYours):
-        net.person_for_grant(store, grant, "check")
+        first_call(store, grant, "check")
     assert not store.one("SELECT 1 FROM tokens WHERE grant_id=?", grant)
 
 
@@ -2164,7 +2176,7 @@ def test_the_sweep_clears_what_sign_in_leaves_behind(store, clock):
     net.sweep(store)
     assert store.one("SELECT id FROM grants WHERE id=?", unused) is None and net.client(store, "idle") is None
     assert not store.one("SELECT 1 FROM link_codes") and not store.one("SELECT 1 FROM tokens WHERE kind='request'")
-    assert net.person_for_grant(store, working, "check") == pid and net.client(store, "app")
+    assert first_call(store, working, "check") == pid and net.client(store, "app")
     assert not store.one("SELECT 1 FROM daily WHERE day < ?", int(store.now() // 86400) - 1)
 
 
@@ -2334,7 +2346,7 @@ def test_a_call_is_logged_in_the_step_that_looks_up_its_connector(store):
     forget_me (review). Also for the first call through a new connection, which makes its person."""
     secret, grant = own_link(store, net.new_person(store)), connection(store)
     lookups = [lambda: net.person_for_connector(store, secret, "check"),
-               lambda: net.person_for_grant(store, grant, "check")]
+               lambda: first_call(store, grant, "check")]
     for lookup in lookups:
         opened, transaction = [], store.transaction
 
@@ -2392,6 +2404,14 @@ def _writer_calls(w) -> dict:
     empty_grant = net.authorization_code(s, empty_code)["grant"]
     empty = net.person_for_grant(s, empty_grant, "check")
     linking = net.link_code(s, ola, replace=True)
+    # A key from before locks waiting for ola's connection, which takes its copy at its next renewal.
+    s.exec("INSERT INTO escrow VALUES (?,?,?)", ola, vault.encode(vault.key(ola)), s.now() + 86400)
+    s.exec("UPDATE grants SET person_key='' WHERE id=?", grant)
+    # Someone whose one connection opens nothing they hold: they start over.
+    lost = net.new_person(s)
+    lost_link = own_link(s, lost)
+    s.exec("UPDATE connectors SET person_key='' WHERE person_id=?", lost)
+    vault._SHARED.pop(lost)
     return {
         "new_person": (None, lambda: net.new_person(s)),
         "sweep": (None, lambda: net.sweep(s)),
@@ -2423,6 +2443,11 @@ def _writer_calls(w) -> dict:
         "exchange_code": (None, lambda: net.exchange_code(s, unused)),
         "_end_grants": (None, lambda: net.revoke(s, renewed)),
         "person_for_grant": (ola, lambda: net.person_for_grant(s, grant, "check")),
+        "renew": (None, lambda: net.renew(s, refresh)),
+        "_release": (None, lambda: net.renew(s, refresh)),
+        "_hand_over": (ola, lambda: net.setup(s, ola, contact="ola@new.example.com")),
+        "_unlock": (lost, lambda: net.person_for_connector(s, lost_link, "check")),
+        "_start_over": (lost, lambda: net.person_for_connector(s, lost_link, "check")),
         "link_code": (ola, lambda: net.link_code(s, ola, replace=False)),
         "use_link_code": (empty, lambda: net.use_link_code(s, empty, empty_grant, linking)),
         "subscribe": (ola, lambda: net.subscribe(s, ola, grant, "https://app.test/hook", SECRET, 7)),
@@ -2715,8 +2740,9 @@ def test_a_report_shows_nothing_written_after_a_deal(world, store, clock):
     agree(store, ola, conversation)
     agree(store, rae, conversation)
     clock.advance(60)
-    store.exec("INSERT INTO messages(conversation_id, sender_id, text, t) VALUES (?,?,?,?)",
-               conversation, rae, "Rae here, I'll wear a red hat", store.now())
+    store.exec("INSERT INTO messages(conversation_id, sender_id, text, t) VALUES (?,?,?,?)", conversation, rae,
+               vault.lock_text(net._conversation_key(store, rae, conversation), "Rae here, I'll wear a red hat",
+                               "message"), store.now())
     store.exec("UPDATE reports SET closed_t=NULL")                  # as code from before the deal closed it left it
     assert net.inbox(store, owner)["reports"] == []
     assert "red hat" not in mcp_server.render_check(net.inbox(store, ola), store.now())
@@ -2930,49 +2956,61 @@ def test_a_database_from_another_version_is_refused(tmp_path):
     net.open_store(fresh)
 
 
-def test_a_two_person_database_moves_to_conversations_of_any_size(tmp_path):
-    """Schema 7 held a conversation as its author and responder, each with a yes and a pass; schema 8 holds its
-    people by seat. A live database must come over whole: the responder starts it in seat 1, the author is in seat 2
-    by their need, a yes given then stands, and a deal names both to each other."""
+def test_a_live_database_from_before_comes_over_whole_and_locked(tmp_path, keys):
+    """The live database is at schema 7: conversations of two, and everything as written. Opened by this code it moves
+    to 8 (the responder in seat 1, the author in seat 2 by their need, a yes given then still standing) and to 9: every
+    word anyone wrote locked, nothing of it left in the file, and each person's key kept open only until each
+    connection they had takes its own copy, at its next use (PROTOCOL.md §5)."""
     import sqlite3
-    path = tmp_path / "seven.db"
-    s = net.open_store(path)
-    s.set_clock(Clock())
-    w = World(s)
-    ola, rae = w.pair()
-    sam = w.add("sam", "Sam Lee", "sam@example.com")
-    dealt = w.deal("ola", "rae")
-    waiting = w.reply("sam", w.go("ola", "a sourdough starter"), "I have one")
-    agree(s, sam, waiting)
-    rows = [dict(r) for r in s.all("SELECT c.id, c.starter_id, c.created_t, c.last_t, c.deal_t, cn.need_id, "
-                                   "cn.author_id, cn.via FROM conversations c JOIN conversation_needs cn ON "
-                                   "cn.conversation_id=c.id")]
-    people = {(r["conversation_id"], r["person_id"]): dict(r) for r in s.all("SELECT * FROM conversation_people")}
-    s.db.close()
-    db = sqlite3.connect(path)          # back to schema 7, as the live database is
-    db.executescript("DROP TABLE conversation_needs; DROP TABLE conversation_people; DROP TABLE conversations; "
-                     "ALTER TABLE reports DROP COLUMN seat; CREATE TABLE conversations (id TEXT PRIMARY KEY, need_id "
-                     "TEXT NOT NULL, author_id TEXT NOT NULL, responder_id TEXT NOT NULL, via TEXT NOT NULL DEFAULT "
-                     "'', created_t REAL NOT NULL, last_t REAL NOT NULL, author_yes_t REAL, responder_yes_t REAL, "
-                     "deal_t REAL, author_passed_t REAL, responder_passed_t REAL, UNIQUE (need_id, responder_id));")
-    for r in rows:
-        author, responder = people[(r["id"], r["author_id"])], people[(r["id"], r["starter_id"])]
-        db.execute("INSERT INTO conversations VALUES (?,?,?,?,?,?,?,?,?,?,?,?)", (
-            r["id"], r["need_id"], r["author_id"], r["starter_id"], r["via"], r["created_t"], r["last_t"],
-            author["yes_t"], responder["yes_t"], r["deal_t"], author["passed_t"], responder["passed_t"]))
-    db.execute("PRAGMA user_version=7")
+    path = tmp_path / "live.db"
+    db = sqlite3.connect(path)
+    db.executescript((Path(__file__).parent / "schema7.sql").read_text())
+    t = T0
+    words = {"Ola Mensah", "ola@example.com", "sourdough and climbing", "Rae Iwuchukwu", "rae@example.com",
+             "Sam Lee", "sam@example.com", "Hollybank Climbers", "A climbing partner at the sea cliffs",
+             "A sourdough starter", "My person climbs on Tuesdays", "Tuesday at six then", "I have a starter going"}
+    db.executemany("INSERT INTO people(id, name, contact, about, created_t) VALUES (?,?,?,?,?)", [
+        ("p-ola", "Ola Mensah", "ola@example.com", "sourdough and climbing", t),
+        ("p-rae", "Rae Iwuchukwu", "rae@example.com", "", t), ("p-sam", "Sam Lee", "sam@example.com", "", t)])
+    db.execute("INSERT INTO communities VALUES ('g-holly', 'Hollybank Climbers', 'p-ola', 'Ab_-9xYz12Qq', ?)", (t,))
+    db.executemany("INSERT INTO memberships(person_id, community_id, joined_t) VALUES (?, 'g-holly', ?)",
+                   [(p, t) for p in ("p-ola", "p-rae", "p-sam")])
+    db.executemany("INSERT INTO needs(id, author_id, text, created_t, expires_t, wants, deals) VALUES (?,?,?,?,?,1,?)",
+                   [("n-climb", "p-ola", "A climbing partner at the sea cliffs", t, t + 7e5, 1),
+                    ("n-bread", "p-ola", "A sourdough starter", t, t + 7e5, 0)])
+    db.executemany("INSERT INTO need_communities VALUES (?, 'g-holly')", [("n-climb",), ("n-bread",)])
+    db.execute("INSERT INTO conversations(id, need_id, author_id, responder_id, via, created_t, last_t, author_yes_t, "
+               "responder_yes_t, deal_t) VALUES ('c-deal', 'n-climb', 'p-ola', 'p-rae', 'g-holly', ?, ?, ?, ?, ?)",
+               (t, t, t, t, t))
+    db.execute("INSERT INTO conversations(id, need_id, author_id, responder_id, via, created_t, last_t, "
+               "responder_yes_t) VALUES ('c-wait', 'n-bread', 'p-ola', 'p-sam', 'g-holly', ?, ?, ?)", (t, t, t))
+    db.executemany("INSERT INTO messages(conversation_id, sender_id, text, t) VALUES (?,?,?,?)", [
+        ("c-deal", "p-rae", "My person climbs on Tuesdays", t), ("c-deal", "p-ola", "Tuesday at six then", t),
+        ("c-wait", "p-sam", "I have a starter going", t)])
+    secret = "s" * 32                                     # ola's connector link from before sign-in
+    db.execute("INSERT INTO connectors VALUES (?, 'p-ola', ?, NULL)", (net._hash(secret), t))
     db.commit()
     db.close()
+    keys.clear()                                          # nobody's key is in anyone's hand: a migration has none
     s = net.open_store(path)
-    s.set_clock(w.store._clock)
-    w.store = s
-    assert s.one("PRAGMA user_version")[0] == 8
-    assert {c["id"]: c.get("them") for c in w.inbox("ola")["conversations"]}[dealt] == {
-        "name": "Rae Iwuchukwu", "contact": "+44 7700 900123"}
-    assert {c["id"]: c["you_said_yes"] for c in w.inbox("sam")["conversations"]} == {waiting: True}
-    assert agree(s, ola, waiting) == net.DEAL                          # the yes from before still meets one
-    assert net._dealt(s, ola, rae) and net._dealt(s, ola, sam) and not net._dealt(s, rae, sam)
-    assert {c["id"] for c in w.inbox("rae")["conversations"]} == {dealt}
+    s.set_clock(Clock(T0 + 60))
+    assert s.one("PRAGMA user_version")[0] == 9 and s.one("SELECT COUNT(*) n FROM escrow")["n"] == 3
+    s.db.close()
+    raw = path.read_bytes()
+    assert not [w for w in words | {"Ab_-9xYz12Qq"} if w.encode() in raw]
+    s = net.open_store(path)
+    s.set_clock(Clock(T0 + 60))
+    assert net.person_for_connector(s, secret, "check") == "p-ola"      # her link takes its own copy of her key
+    seen = net.inbox(s, "p-ola")
+    assert seen["me"]["about"] == "sourdough and climbing" and seen["me"]["communities"][0]["name"] == \
+        "Hollybank Climbers"
+    by_id = {c["id"]: c for c in seen["conversations"]}
+    assert by_id["c-deal"]["them"] == {"name": "Rae Iwuchukwu", "contact": "rae@example.com"}
+    assert [m["text"] for m in by_id["c-wait"]["messages"]] == ["I have a starter going"]
+    assert not s.one("SELECT 1 FROM escrow WHERE person_id='p-ola'")          # every connection of hers has it
+    assert agree(s, "p-ola", "c-wait") == net.DEAL                             # sam's yes from before stands
+    assert net.community_by_invite(s, "https://bridge.test/join/Ab_-9xYz12Qq")["name"] == "Hollybank Climbers"
+    assert net._dealt(s, "p-ola", "p-rae") and not net._dealt(s, "p-rae", "p-sam")
 
 
 # -- conversations of several people ----------------------------------------------------------------------------
@@ -3053,7 +3091,8 @@ def test_someone_going_takes_back_every_yes_given_while_they_were_in_it(world, s
                 lambda: net.withdraw(store, rae, conversation)):
         with pytest.raises(net.Refused, match="no longer in that conversation; the others carry on"):
             act()
-    assert net.report(store, rae, f"{conversation}:1") == net.REPORTED and net._reported(store, world.community) == []
+    assert net.report(store, rae, f"{conversation}:1") == net.REPORTED
+    assert net._reported(store, world.owner, world.community) == []
 
 
 def test_a_closed_need_takes_its_author_out_and_the_rest_carry_on(world, store):
@@ -3122,3 +3161,128 @@ def test_a_group_conversation_s_labels_never_change_with_who_wrote_which_need(wo
     c = world.inbox("sam")["conversations"][0]
     assert [(n["by"], n["text"]) for n in c["needs"]] == [("person 2", "a climbing partner at the sea cliffs"),
                                                          ("person 3", "a lift to the coast")]
+
+
+# -- locks: what anyone wrote is kept so only their own connections open it ----------------------------------------
+
+def _everything_written(world, store) -> set[str]:
+    """A community going about its business — notes, needs, a group and a pair, a deal, a report — and every string
+    anyone wrote in it."""
+    ola, rae = world.pair()
+    world.add("sam", "Sam Lee", "sam@example.com", "drives to the coast most weekends")
+    net.rename(store, world.owner, world.community, "Hollybank Climbers")
+    climb, lift = world.go("ola", "a climbing partner at the sea cliffs"), world.go("rae", "a lift to the coast")
+    group = world.reply("sam", f"{climb}, {lift}", "I drive there Saturdays and climb")
+    world.reply("ola", group, "Saturday at nine suits me")
+    pair = world.reply("rae", world.go("ola", "a sourdough starter to share"), "Mine is three years old")
+    net.report(store, ola, pair)
+    agree(store, ola, pair)
+    agree(store, rae, pair)
+    return {"Ola Mensah", "ola@example.com", "sourdough baking, running", "Rae Iwuchukwu", "+44 7700 900123",
+            "rust, climbing, board games", "Sam Lee", "sam@example.com", "drives to the coast", "Hollybank Climbers",
+            "a climbing partner at the sea cliffs", "a lift to the coast", "I drive there Saturdays",
+            "Saturday at nine", "a sourdough starter to share", "Mine is three years old", world.invite,
+            net.invite_code(store, world.owner, world.community)}
+
+
+def test_nothing_anyone_wrote_is_kept_readable(world, store, tmp_path):
+    """The stated goal, met for what is kept: names, contacts, notes, community names, invite codes, needs and
+    messages are in the database only locked, and so in every backup (PROTOCOL.md §5)."""
+    written = _everything_written(world, store)
+    kept = json.dumps([(t, [tuple(r) for r in store.all(f"SELECT * FROM {t}")]) for t in (
+        r["name"] for r in store.all("SELECT name FROM sqlite_master WHERE type='table'"))])
+    assert not [w for w in written if w in kept]
+    copy = tmp_path / "copy.db"
+    store.db.execute(f"VACUUM INTO '{copy}'")
+    assert not [w for w in written if w.encode() in copy.read_bytes()]
+
+
+def test_the_server_alone_opens_nothing(world, store, keys):
+    """With no connection behind a call, none of it opens: the server holds no key of its own."""
+    _everything_written(world, store)
+    keys.clear()
+    for pid in world.p.values():
+        with pytest.raises(vault.Locked):
+            net.inbox(store, pid)
+    assert net.stats(store)["people"] == 4                            # counts need no key, and are all it gives
+
+
+def test_each_reads_what_reached_them_and_nothing_else_opens_for_them(world, store, keys):
+    """Holding only their own key, each still reads everything they could before: their notes, their community's
+    name, the needs that reached them, a conversation of several, and a deal's name and contact."""
+    _everything_written(world, store)
+    everyone = dict(keys)
+    for key in ("ola", "rae", "sam"):
+        keys.clear()
+        keys[world.p[key]] = everyone[world.p[key]]
+        seen = json.dumps(world.inbox(key))
+        assert "Hollybank Climbers" in seen and "a climbing partner at the sea cliffs" in seen, key
+        assert ("Rae Iwuchukwu" in seen) == (key in ("ola", "rae")), key        # her deal partner, and herself
+        assert ("Ola Mensah" in seen) == (key in ("ola", "rae")), key
+        assert "Saturday at nine" in seen, key                                  # all three are in the group
+
+
+def test_a_code_carries_the_key_and_one_the_operator_made_starts_over(world, store, keys):
+    """A code from the person's own chat carries their key, locked under it, to the new connection. The operator's,
+    for someone who lost every app, carries none — the operator holds no key — so they start over: what was sealed
+    to the old key is gone for them too, and their communities open again only with their invite links."""
+    ola, rae = world.pair()
+    need = world.go("ola", "a climbing partner")
+    grant, empty = signed_in(store)
+    net.use_link_code(store, empty, grant, net.link_code(store, ola, replace=False), TOKENS[grant])
+    keys.clear()
+    assert net.inbox(store, first_call(store, grant))["mine"][0]["text"] == "a climbing partner"
+    lost = net.link_code(store, ola, replace=True)
+    assert store.one("SELECT person_key FROM link_codes WHERE person_id=?", ola)["person_key"] != ""
+    store.exec("UPDATE link_codes SET person_key='' WHERE person_id=?", ola)    # as the operator's has it
+    fresh, empty = signed_in(store)
+    keys.clear()
+    net.use_link_code(store, first_call(store, fresh), fresh, lost, TOKENS[fresh])
+    me = net.me(store, ola)
+    assert me["name"] == "" and me["about"] == "" and me["communities"] == []          # out until a link brings her
+    net.join_by_invite(store, ola, world.invite)                        # the link opens the community again
+    assert net.me(store, ola)["communities"][0]["name"] == "Friends"
+    assert need
+
+
+def test_a_connection_that_cannot_open_its_persons_key_is_told_how_to_get_it(world, store, keys):
+    """A connection from before locks whose copy never came, while another of theirs still opens the key, is told
+    to bring a code over from there; the code fills it in, and nobody starts over (that would lose what the other
+    holds)."""
+    ola, _ = world.pair()
+    grant, _ = signed_in(store)
+    store.exec("UPDATE grants SET person_id=? WHERE id=?", ola, grant)
+    own = own_link(store, ola)                                         # the working one: holds her key
+    keys.clear()
+    first_call(store, grant)
+    with pytest.raises(vault.Locked):
+        net.inbox(store, ola)
+    keys.clear()
+    code = net.link_code(store, net.person_for_connector(store, own, "setup"), replace=False)
+    keys.clear()
+    first_call(store, grant)
+    assert net.use_link_code(store, ola, grant, code, TOKENS[grant]) == (net.ALREADY_LINKED, ola)
+    keys.clear()
+    assert net.inbox(store, first_call(store, grant))["me"]["name"] == "Ola Mensah"
+
+
+def test_the_key_kept_from_before_locks_goes_once_every_connection_has_a_copy(world, store, keys, clock):
+    """A person's key from before locks is kept open for the connections they already had, each taking a copy at its
+    next use; then it goes. Kept past ESCROW_S it goes anyway, and a connection that never came starts over if it is
+    their only one."""
+    ola, rae = world.pair()
+    own, other = own_link(store, ola), own_link(store, rae)
+    for pid in (ola, rae):
+        store.exec("INSERT INTO escrow VALUES (?,?,?)", pid, vault.encode(keys[pid]), clock.t + net.ESCROW_S)
+    store.exec("UPDATE connectors SET person_key=''")
+    keys.clear()
+    net.person_for_connector(store, own, "check")
+    assert not store.one("SELECT 1 FROM escrow WHERE person_id=?", ola)
+    assert world.inbox("ola")["me"]["name"] == "Ola Mensah"
+    clock.advance(net.ESCROW_S + 1)
+    store.exec("DELETE FROM kv")
+    net.sweep(store)
+    assert not store.one("SELECT 1 FROM escrow")
+    keys.clear()
+    net.person_for_connector(store, other, "check")                    # rae's only connection: she starts over
+    assert world.inbox("rae")["me"]["name"] == ""

@@ -8,7 +8,8 @@ when the server is down. This is how to keep one up on a Mac or a Linux machine 
 Three long-running pieces, restarted if they exit:
 
 - the server, `~/bridge-live/.venv/bin/bridge serve --port 8770`, with `BRIDGE_BASE_URL` (the public address) and
-  `BRIDGE_OPERATOR` (who runs it, named on every page because they can read everything). `~/bridge-live` is a
+  `BRIDGE_OPERATOR` (who runs it, named on every page, which says what they cannot read) and `BRIDGE_SOURCE` (where
+  the code it runs is published, linked from those pages). `~/bridge-live` is a
   detached git worktree that only `scripts/deploy` moves, so editing a checkout changes nothing live;
 - `cloudflared tunnel run --url http://127.0.0.1:8770 <tunnel>`, carrying the public hostname to that port;
 - `scripts/tick` from the live tree every ten minutes: backups, trimming logs, down alerts.
@@ -50,6 +51,21 @@ copy of the live database with the new code (so a migration is rehearsed on the 
 the move leaves everything as it was. Deploying an older commit is the rollback; across a schema migration it
 also needs a backup from before it. Deploy a safety change as its own release, and a run of them one commit at a
 time, each checked live before the next: a rollback then undoes only the last.
+
+Where the code is published, record each deploy there too: the live instance's deploy script tags the commit
+`live-<time>` in the public repository once the public `/health` names it, so anyone can see which version has run
+and since when.
+
+## Locks
+
+What members write is stored locked (`bridge/vault.py`, PROTOCOL.md §5): the database and its backups open nothing
+without a member's connection, and the operator holds no key. `bridge stats` still gives counts. The move to locks
+(schema 9) kept each person's key open in the `escrow` table until each connection they already had took its own
+copy at its next use, for at most `ESCROW_S` (two weeks); `check` sweeps what is left after that, and a connection
+that never came back then starts over if it was its person's only one, or is told to bring a code from one that
+did. `SELECT COUNT(*) FROM escrow` shows how many are still waiting. Backups taken before the move hold what was
+written then in the clear until they age out with the rest; the one the deploy takes just before it is the way
+back to schema 8, since code from before refuses a database at 9.
 
 ## A theme
 
@@ -100,10 +116,12 @@ community ("Start a Bridge community called …"), which gives them its link.
 A connection is whoever holds the app it is in; nothing else says who anyone is. Someone who removed Bridge
 from their only app, or lost that app account, has a new, empty account the next time they add it. If they still
 have Bridge working anywhere, that app gives a code (`setup` with another_app) and they need nobody. If not,
-the operator makes one, `uv run bridge code <person id>` (the person found by the contact on file in a backup
-from before the request), and sends it only to that contact, never in the channel the request came in; otherwise
-it goes nowhere. Its use ends every other connection of theirs. A deletion asked for by someone who has lost
-every connection goes the same way.
+nobody can bring their things back: everything they wrote, and everything written to them, is locked under keys
+only their connections held. The operator cannot even find them, since names and contacts are locked too.
+`uv run bridge code <person id>` still makes a code for a person id the operator somehow has, and whoever uses it
+becomes that person starting over: same id, nothing that was locked, communities to rejoin with their links. Their
+old account's needs run out on their own (seven days unless they set longer); a deletion they ask for after losing
+every connection cannot be done by anyone, and the reply should say so.
 
 Never delete a `connectors` row: people who connected before sign-in still use their own link, and a deleted
 person's row is what makes a link of theirs say so.

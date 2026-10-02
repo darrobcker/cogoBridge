@@ -6,7 +6,9 @@
 <p>{{ app }}{% if host %} ({{ host }}){% endif %} asks to use Bridge for you. Allow it only if you just added Bridge
 to your own AI app.{% if community %} You will join <strong>{{ community.name }}</strong>.{% endif %}</p>
 <ul>
-<li>{{ operator or "Whoever runs this server" }} can read everything stored here, including messages.</li>
+<li>What people write here is stored locked: only the members it is for can open it, through their own AI.
+{{ operator or "Whoever runs this server" }} cannot read what is stored{% if source %}, and runs
+<a href="{{ source }}">published code</a>{% endif %}.</li>
 <li>Your name and contact go only to someone you both said yes to.</li>
 {% if small %}
 <li>Fewer than ten people have ever joined {{ community.name }}, so whoever is in it may well guess who wrote a

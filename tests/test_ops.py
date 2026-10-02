@@ -99,8 +99,8 @@ def test_backup_is_a_private_checked_copy_including_what_is_still_in_the_wal_and
     done = run(env, SCRIPTS / "backup")
     assert done.returncode == 0, done.stderr
     new = Path(done.stdout.strip())
-    names = {r[0] for r in sqlite3.connect(new).execute("SELECT name FROM communities")}
-    assert names == {"Friends", "Written after the last checkpoint"}
+    # Both communities, the one written after the last checkpoint too; their names are locked, as everywhere.
+    assert sqlite3.connect(new).execute("SELECT COUNT(*) FROM communities").fetchone()[0] == 2
     assert stat.S_IMODE(new.stat().st_mode) == 0o600 and stat.S_IMODE((h / "backups").stat().st_mode) == 0o700
     assert not old.exists() and not half.exists() and recent.exists() and all(k.exists() for k in kept)
     assert backups(h) == sorted([new, recent])

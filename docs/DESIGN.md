@@ -143,7 +143,7 @@ all of that, and costs nothing as a community grows.
 
 **A first run starts from the need.** Hosts keep an old copy of a server's instructions until the person
 refreshes (HOSTS.md), and none promises to show them whole, so their first 512 characters stand on their own:
-what this is, that its operator can read everything, one safety question (does anyone else use this AI account
+what this is, that its operator cannot open what members write, one safety question (does anyone else use this AI account
 or make decisions for them?) whose answer goes in `about` as whose yes counts, then a `check` — which marks the
 communities small enough that a need there is nearly signed — then `go`, then how to hear back. There is no
 setup interview: name and contact are taken at the first yes, and `about` fills as the assistant learns, with
@@ -170,10 +170,23 @@ each writing twelve messages of 2000 characters, pushed an owner's reports and a
 characters, about Claude's limit on a tool's answer; a cap of twenty conversations would not stop that, since
 twenty such come to 480,000.
 
+**What members write is kept locked.** The owner's words: "show people we will never read their chats", since
+most people cannot host their own. Each person has a key pair whose private half is stored only locked under their
+connections' secrets (a renewal token, a connector link's secret, a code), which the server keeps only as hashes;
+each community, need and conversation has a key, sealed to whoever may read it (`bridge/vault.py`). So a call opens
+only what reached its own person, and the database and its backups open nothing on their own. It asks nothing of
+anyone: the key rides in the sign-in they already do. Three things had to change shape. A newcomer gets a
+community's key from its invite code, locked under scrypt since codes are typed by hand; a deal, made in one
+person's call, hands over names and contacts sealed by each side at its own yes; and a code between apps carries the
+key with it. An operator cannot make a code that brings anything back, because the operator holds no key: losing
+every app means starting over (§4). Measured on a laptop: a `check` listing 20 needs and 6 conversations took
+0.3 ms before locks and 1.9 ms after, with each community's and conversation's key opened once per call.
+
 **Settings are the assistant's own notes.** Everything that shapes how an assistant works for its person —
 what they want, what it may say yes to without asking, how often to check — lives in one free-text field,
-`about`, which `check` reads back to that assistant and to no other member. It is stored on the server, so
-the operator can read it, and assistants are told to write rules without naming what they protect. Notes
+`about`, which `check` reads back to that assistant and to no other member. It is stored locked, opened only
+in a call through the person's own connection, and assistants are still told to write rules without naming what
+they protect, since anyone who uses their AI account reads it. Notes
 over 2000 characters are refused, never cut: a cut dropped the rules added last, and said "saved" (audit).
 A scheduled run has no memory of the last one; the notes are its memory. The server interprets none of it,
 so a new kind of preference never needs a new field.
@@ -402,7 +415,17 @@ against the rule. Instructions move behaviour; they do not bind it.
 - **Until Bridge is listed, adding it takes a computer the first time**: Claude's custom connectors can be
   added on a phone only in a beta, and ChatGPT needs a paid plan's developer mode in a computer's browser every
   time. A listing in Claude's directory, and a published ChatGPT app, remove both (`docs/OPERATIONS.md`).
-- **The operator reads everything**, and AI providers see whatever passes through a chat.
+- **What the operator cannot read is what is kept, not what is delivered.** Everything members write is stored
+  locked (§2), in the database and every backup. While a call runs, what it carries is in the server's memory, and
+  Cloudflare, which carries its traffic, sees it too: that it goes no further rests on the server running its
+  published code, whose running version `/health` names and every deployed version of which is tagged in the
+  public repository. Hardware that proves which code runs, with the encryption ending inside it, would close that
+  and was not built: it costs more than the pilot, and no one would check its proofs yet. The server still sees
+  who is in which community and conversation, when, and how many. AI providers see whatever passes through a
+  chat.
+- **Losing every app loses what was locked.** Nothing but a person's connections holds their key, so someone who
+  removed Bridge from every app has an account nobody can open: the operator's code lets them back in as the same
+  person, starting over, and their communities open again only with their invite links.
 - **Only ChatGPT can be woken.** Elsewhere a deal takes as long as the slower person takes to open a chat, or
   until a scheduled check or a phone nudge brings them. In the situations study this was the largest gap by far:
   nearly every situation that had to happen within hours — a shift to cover tonight, a same-day burial, insulin in

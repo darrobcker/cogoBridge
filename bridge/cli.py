@@ -2,9 +2,10 @@
 
 Configuration is environment variables: BRIDGE_HOME (where the database lives, default ~/.bridge),
 BRIDGE_BASE_URL (the public URL, when not using --tunnel or --hostname), BRIDGE_OPERATOR (your name,
-shown on the pages because you can read everything), BRIDGE_CONTACT (how people reach you, on the help the
-directories link to), and for the directories (docs/OPERATIONS.md): BRIDGE_CLAUDE_LISTING,
-BRIDGE_CHATGPT_LISTING and BRIDGE_OPENAI_CHALLENGE; BRIDGE_THEME, a directory with a server's own look.
+shown on the pages, which say what you cannot read), BRIDGE_SOURCE (where the code you run is published, linked
+from them), BRIDGE_CONTACT (how people reach you, on the help the directories link to), and for the directories
+(docs/OPERATIONS.md): BRIDGE_CLAUDE_LISTING, BRIDGE_CHATGPT_LISTING and BRIDGE_OPENAI_CHALLENGE; BRIDGE_THEME, a
+directory with a server's own look.
 """
 from __future__ import annotations
 
@@ -56,7 +57,7 @@ def cmd_serve(args) -> None:
     (HOME / "url.txt").write_text(url)
     print(f"Bridge: {url}", file=sys.stderr)
     site = {key: os.environ.get(f"BRIDGE_{key.upper()}", "")
-            for key in ("claude_listing", "chatgpt_listing", "contact", "openai_challenge", "theme")}
+            for key in ("claude_listing", "chatgpt_listing", "contact", "openai_challenge", "theme", "source")}
     app = create_app(store, base_url=url, operator=os.environ.get("BRIDGE_OPERATOR", ""), **site)
     # No access log: the older connector links carry their secret in the URL, and sign-in its request.
     uvicorn.run(app, host=args.host, port=args.port, log_level="info", access_log=False)

@@ -66,8 +66,10 @@ def _version() -> str:
 
 
 def create_app(store: Store, *, base_url: str, operator: str = "", claude_listing: str = "",
-               chatgpt_listing: str = "", contact: str = "", openai_challenge: str = "", theme: str = "") -> Starlette:
-    """`operator` is who runs this server, named on the pages because they can read everything; `contact`, how to
+               chatgpt_listing: str = "", contact: str = "", openai_challenge: str = "", theme: str = "",
+               source: str = "") -> Starlette:
+    """`operator` is who runs this server, named on the pages, which say what they cannot read; `source`, where the
+    code it runs is published, so a reader can check the pages' claim against it; `contact`, how to
     reach them, for the help a directory listing asks to link to. `openai_challenge`: the token OpenAI's plugin portal
     asks this host to show, to prove it is the publisher's. `theme`: a directory whose `templates/` are found before
     these and whose `static/` is served at /static — a server's own look, kept out of the protocol's code. A theme
@@ -88,6 +90,7 @@ def create_app(store: Store, *, base_url: str, operator: str = "", claude_listin
 
     def page(name: str, status: int = 200, **context) -> HTMLResponse:
         response = HTMLResponse(env.get_template(name).render(operator=operator, connector=connector, contact=contact,
+                                                              source=source,
                                                               claude_add=claude_add, claude_listed=bool(claude_listing),
                                                               chatgpt_listing=chatgpt_listing, **context),
                                 status_code=status)
@@ -130,10 +133,10 @@ def create_app(store: Store, *, base_url: str, operator: str = "", claude_listin
         community = net.community_by_invite(store, request.path_params["invite"])
         if community is None:
             return page("invalid.html", 404)
-        link = f"{base}/join/{community['invite_code']}"
+        link = f"{base}/join/{community['code']}"
         if request.method != "POST":    # chat apps fetch links to preview them, some by HEAD
             return remember(page("join.html", community=community, link=link, small=net.small(store, community["id"])),
-                            community["invite_code"])
+                            community["code"])
         ai = (await request.form()).get("ai", "")
         # A press, not a person: counted by the AI chosen, so presses can be read against Allows and first calls.
         # A post with no button pressed is counted apart: link scanners submit the form bare, and counted as
@@ -141,8 +144,8 @@ def create_app(store: Store, *, base_url: str, operator: str = "", claude_listin
         net.log_call(store, f"join-page {ai if ai in AIS or ai == 'other' else 'none'} {community['id']}")
         ai = ai if ai in AIS else "other"
         if ai == "claude":      # straight to Claude's own dialog, in a tab of its own; the next step is on Allow
-            return remember(RedirectResponse(claude_add, status_code=303), community["invite_code"], ai)
-        return remember(page("connect.html", community=community, ai=ai, link=link), community["invite_code"], ai)
+            return remember(RedirectResponse(claude_add, status_code=303), community["code"], ai)
+        return remember(page("connect.html", community=community, ai=ai, link=link), community["code"], ai)
 
     async def allow(request: Request) -> Response:
         """An app's sign-in: one button. The page names the app, where it sends the person back, and the community
@@ -157,7 +160,8 @@ def create_app(store: Store, *, base_url: str, operator: str = "", claude_listin
             invite = ""
         if request.method != "POST":
             info = json.loads(net.client(store, waiting["client_id"]) or "{}")
-            community = store.one("SELECT id, name FROM communities WHERE invite_code=?", invite)
+            # Its name opens with the code the invite page left: the server keeps it only locked.
+            community = net.community_by_invite(store, invite) if invite else None
             response = page("allow.html", ref=ref, app=(info.get("client_name") or "An app")[:60],
                             host=urlparse(waiting["redirect_uri"]).hostname or "",
                             community=community, small=bool(community) and net.small(store, community["id"]))

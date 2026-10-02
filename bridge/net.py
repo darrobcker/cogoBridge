@@ -18,8 +18,8 @@ import secrets
 import sqlite3
 from pathlib import Path
 
-from . import guard
-from .store import Store
+from . import guard, vault
+from .store import MIGRATIONS, Store
 
 NEED_TTL_S = 7 * 86400            # a need stops reaching people after a week, unless its author said otherwise
 MIN_DAYS, MAX_DAYS = 0.04, 365    # an hour ("someone at the station now") to a year (a standing offer)
@@ -46,6 +46,7 @@ AUTH_CODE_S = 300                 # an authorization code, between Allow and the
 LINK_CODE_S = 3600                # a code from the chat that joins another connection to its person
 LINK_CODE = 12                    # characters (59 bits) of one, typed by hand from one app into another
 WAKE_S = 30 * 86400               # the longest an app's subscription to be woken lasts before it renews it
+ESCROW_S = 14 * 86400             # a key from before locks waits this long for its person's connections to copy it
 MAX_TEXT, MAX_NAME, MAX_CONTACT = 2000, 80, 200
 NUDGE_EVERY_S = 600               # at most one nudge per person per ten minutes
 NTFY = "https://ntfy.sh/"         # where every nudge goes: a topic the server made, never an address a member chose
@@ -129,7 +130,8 @@ def _text(raw: str, what: str, limit: int = MAX_TEXT) -> str:
 
 
 def _unidentifying(store: Store, person_id: str, text: str) -> None:
-    me = store.one("SELECT name, contact FROM people WHERE id=?", person_id)
+    row, mine = store.one("SELECT name, contact FROM people WHERE id=?", person_id), _self(person_id)
+    me = {k: vault.unlock_text(mine, row[k], k) for k in ("name", "contact")}
     hit = guard.identifies(text, me["name"], me["contact"])
     if hit and hit.lower() in guard.name_words(me["name"]):
         # Someone named Sunday or Park could not tell why a weekday or a place was refused (audit).
@@ -161,12 +163,127 @@ def _acting(store: Store, person_id: str) -> None:
         raise NotYours()
 
 
+# -- locks: what members write is kept so that only their own connections open it (bridge/vault.py) ----------------
+
+def _self(person_id: str) -> bytes:
+    """The key a person's own name, contact and notes are locked under: theirs, held only in their own call."""
+    return vault.self_key(vault.key(person_id))
+
+
+def _seal_to(store: Store, person_id: str, data: bytes, purpose: str) -> str:
+    """For that person alone. Nothing, for someone deleted: there is nobody left to open it."""
+    row = store.one("SELECT public FROM people WHERE id=?", person_id)
+    return vault.seal(row["public"], data, purpose) if row and row["public"] else ""
+
+
+def _community_key(store: Store, person_id: str, community_id: str) -> bytes:
+    """A community's key, as this person holds it: they are in it, or were."""
+    row = store.one("SELECT key FROM memberships WHERE person_id=? AND community_id=?", person_id, community_id)
+    if not row or not row["key"]:
+        raise vault.Locked()
+    return vault.opened(("community", row["key"]),
+                        lambda: vault.open_sealed(vault.key(person_id), row["key"], "community"))
+
+
+def _community_name_for(store: Store, person_id: str, community_id: str) -> str:
+    """A community's name as this person sees it; empty where nothing they hold opens it."""
+    row = store.one("SELECT name FROM communities WHERE id=?", community_id)
+    try:
+        return vault.unlock_text(_community_key(store, person_id, community_id), row["name"], "community name") \
+            if row else ""
+    except vault.Locked:
+        return ""
+
+
+def _link_key(code: str) -> bytes:
+    """What a community's invite code opens: its key, the way a newcomer gets it."""
+    return vault.from_code(code, "invite")
+
+
+def _need_key(store: Store, person_id: str, need) -> bytes:
+    """A need's key, through what this person holds: their own need, or a community it reached them through."""
+    if need["author_id"] == person_id:
+        return vault.open_sealed(vault.key(person_id), need["author_key"], "need")
+    for row in store.all("SELECT nc.community_id, nc.key FROM need_communities nc JOIN memberships m ON "
+                         "m.community_id=nc.community_id AND m.person_id=? AND m.key<>'' WHERE nc.need_id=?",
+                         person_id, need["id"]):
+        try:
+            return vault.unlock(_community_key(store, person_id, row["community_id"]), row["key"], "need key")
+        except vault.Locked:
+            continue
+    raise vault.Locked()
+
+
+def _need_text(store: Store, person_id: str, need) -> str:
+    try:
+        return vault.unlock_text(_need_key(store, person_id, need), need["text"], "need") if need["text"] else ""
+    except vault.Locked:
+        return ""
+
+
+def _conversation_key(store: Store, person_id: str, conversation_id: str) -> bytes:
+    row = store.one("SELECT key FROM conversation_people WHERE conversation_id=? AND person_id=?", conversation_id,
+                    person_id)
+    if not row or not row["key"]:
+        raise vault.Locked()
+    return vault.opened(("conversation", row["key"]),
+                        lambda: vault.open_sealed(vault.key(person_id), row["key"], "conversation"))
+
+
+def _escrowed(store: Store, person_id: str) -> bytes | None:
+    """A key from before locks, while it waits for this person's connections to take their copies."""
+    row = store.one("SELECT private FROM escrow WHERE person_id=? AND until_t>?", person_id, store.now())
+    return vault.decode(row["private"]) if row else None
+
+
+def _release(store: Store, person_id: str) -> None:
+    """Every connection of theirs now holds its own copy: the open one goes."""
+    if not (store.one("SELECT 1 FROM grants WHERE person_id=? AND revoked_t IS NULL AND person_key=''", person_id)
+            or store.one("SELECT 1 FROM connectors WHERE person_id=? AND revoked_t IS NULL AND person_key=''",
+                         person_id)):
+        store.exec("DELETE FROM escrow WHERE person_id=?", person_id)
+
+
+def _start_over(store: Store, person_id: str) -> bytes:
+    """A new key for someone nothing they still hold opens: what was sealed to the old one is gone for good, for
+    them too, and what they keep for themselves starts empty (PROTOCOL.md §5). They are out of their communities,
+    whose keys they no longer hold, until an invite link brings them back, and out of conversations they could no
+    longer read: all of one person's things at once, as at leaving (rule 7)."""
+    private, public = vault.new_pair()
+    now = store.now()
+    store.exec("UPDATE people SET public=?, name='', contact='', about='' WHERE id=?", public, person_id)
+    store.exec("UPDATE memberships SET key='', left_t=COALESCE(left_t, ?) WHERE person_id=?", now, person_id)
+    store.exec("UPDATE conversation_people SET passed_t=COALESCE(passed_t, ?) WHERE person_id=? AND "
+               "conversation_id IN (SELECT id FROM conversations WHERE deal_t IS NULL)", now, person_id)
+    store.exec("UPDATE conversation_people SET key='' WHERE person_id=?", person_id)
+    store.exec("DELETE FROM reveals WHERE to_id=?", person_id)
+    vault.hold(person_id, private)
+    return private
+
+
+def _locked_out(store: Store, person_id: str, *, besides: tuple[str, str]) -> bool:
+    """Whether another connection of theirs still opens their key, other than `besides` (its table, its row)."""
+    table, row = besides
+    return bool(store.one("SELECT 1 FROM grants WHERE person_id=? AND revoked_t IS NULL AND person_key<>'' AND "
+                          "id<>?", person_id, row if table == "grants" else "")
+                or store.one("SELECT 1 FROM connectors WHERE person_id=? AND revoked_t IS NULL AND person_key<>'' "
+                             "AND secret_hash<>?", person_id, row if table == "connectors" else ""))
+
+
+LOCKED = ("this connection cannot open your person's Bridge: it is locked under the keys their other connections "
+          "hold. In the app where Bridge still works for them, ask for a code for another app (`setup` with "
+          "another_app) and pass it here as `setup` with code; this connection then holds the key too.")
+
+
 # -- people ----------------------------------------------------------------------------------------
 
 def new_person(store: Store) -> str:
+    """Someone new, with a key pair whose private half this call holds, and nothing stores but locked."""
+    private, public = vault.new_pair()
     with store.transaction():
         pid = _new_id(store, "people", "p", 16)
-        store.exec("INSERT INTO people(id, created_t) VALUES (?,?)", pid, store.now())
+        store.exec("INSERT INTO people(id, created_t, public) VALUES (?,?,?)", pid, store.now(), public)
+    vault.hold(pid, private)
     return pid
 
 
@@ -189,10 +306,14 @@ def setup(store: Store, person_id: str, *, name: str | None = None, contact: str
     with store.transaction():
         _acting(store, person_id)
         if name is not None:
-            store.exec("UPDATE people SET name=? WHERE id=?", _text(name, "the name", MAX_NAME), person_id)
+            store.exec("UPDATE people SET name=? WHERE id=?",
+                       vault.lock_text(_self(person_id), _text(name, "the name", MAX_NAME), "name"), person_id)
         if contact is not None:
-            store.exec("UPDATE people SET contact=? WHERE id=?", _text(contact, "the contact", MAX_CONTACT),
+            store.exec("UPDATE people SET contact=? WHERE id=?",
+                       vault.lock_text(_self(person_id), _text(contact, "the contact", MAX_CONTACT), "contact"),
                        person_id)
+        if name is not None or contact is not None:
+            _hand_over_again(store, person_id)
         if about is not None:
             # Refused, never cut: a cut dropped the rules added last and still said "saved" (audit #19).
             about = about.strip()
@@ -203,7 +324,8 @@ def setup(store: Store, person_id: str, *, name: str | None = None, contact: str
             if not _measured(about, "`about`", MAX_TEXT, ". Nothing was saved: shorten the notes, keeping every "
                              "rule your person gave, and send them all again"):
                 about = ""
-            store.exec("UPDATE people SET about=? WHERE id=?", about, person_id)
+            store.exec("UPDATE people SET about=? WHERE id=?", vault.lock_text(_self(person_id), about, "about"),
+                       person_id)
         if notify == "off":
             store.exec("UPDATE people SET notify='' WHERE id=?", person_id)
             outcome = OFF
@@ -252,11 +374,13 @@ def me(store: Store, person_id: str) -> dict:
     """The person as their own assistant sees them. For each community, whether it is small; for one they own,
     how many others have joined it: a count, never names."""
     p = store.one("SELECT name, contact, about, notify FROM people WHERE id=?", person_id)
+    mine = _self(person_id)
     communities = []
-    for c in store.all("SELECT c.id, c.name, c.created_by=? owner FROM communities c JOIN memberships m "
+    for c in store.all("SELECT c.id, c.created_by=? owner FROM communities c JOIN memberships m "
                        "ON m.community_id=c.id WHERE m.person_id=? AND m.left_t IS NULL ORDER BY m.joined_t, m.rowid",
                        person_id, person_id):
-        item = {"id": c["id"], "name": c["name"], "owner": bool(c["owner"]), "small": small(store, c["id"])}
+        item = {"id": c["id"], "name": _community_name_for(store, person_id, c["id"]), "owner": bool(c["owner"]),
+                "small": small(store, c["id"])}
         if c["owner"]:
             # Everyone who ever joined, not who is in now: a count that dropped when an owner removed someone
             # by a need told them whether its anonymous author was still a member, and one that dropped as a
@@ -265,7 +389,8 @@ def me(store: Store, person_id: str) -> dict:
             item["joined"] = store.one("SELECT COUNT(*) n FROM memberships WHERE community_id=? AND person_id<>?",
                                        c["id"], person_id)["n"]
         communities.append(item)
-    return {**dict(p), "communities": communities}
+    return {**{k: vault.unlock_text(mine, p[k], k) for k in ("name", "contact", "about")}, "notify": p["notify"],
+            "communities": communities}
 
 
 def small(store: Store, community_id: str) -> bool:
@@ -281,8 +406,8 @@ def person_for_connector(store: Store, secret: str, tool: str, *, operator: str 
     link that someone else ended."""
     with store.transaction():
         # LEFT JOIN, so a row whose person is gone refuses rather than resolving to someone who is not there.
-        r = store.one("SELECT c.person_id, c.revoked_t, p.id pid, p.deleted_t FROM connectors c "
-                      "LEFT JOIN people p ON p.id=c.person_id WHERE c.secret_hash=?", _hash(secret))
+        r = store.one("SELECT c.person_id, c.revoked_t, c.person_key, c.secret_hash, p.id pid, p.deleted_t FROM "
+                      "connectors c LEFT JOIN people p ON p.id=c.person_id WHERE c.secret_hash=?", _hash(secret))
         if not r or not r["pid"]:
             raise Refused("this connector link is not one this server knows. Remove it from the AI's settings, then "
                           "open an invite link and add Bridge the way its page says.")
@@ -295,7 +420,36 @@ def person_for_connector(store: Store, secret: str, tool: str, *, operator: str 
                           "used) and no longer works. If your person did not ask for that, someone else had their "
                           f"access: they should write to {operator or 'whoever runs this server'}.")
         store.exec("INSERT INTO calls(t, person_id, tool) VALUES (?,?,?)", store.now(), r["person_id"], tool)
+        _unlock(store, r["person_id"], vault.from_secret(secret, "connector"), r["person_key"],
+                ("connectors", r["secret_hash"]))
     return r["person_id"]
+
+
+def _unlock(store: Store, person_id: str, credential: bytes | None, locked: str, row: tuple[str, str]) -> None:
+    """This call holds the person's key from now on, opened by the credential it came with: its own copy, or the
+    one kept from before locks, of which it then takes a copy. A credential nothing opens is locked out while another
+    connection of theirs still holds the key, and starts them over when none does. `row`: where its copy goes."""
+    try:
+        private = vault.unlock(credential, locked, "person key") if credential and locked else None
+    except vault.Locked:
+        private = None
+    if private is None:
+        private = _escrowed(store, person_id)
+        if private is not None and credential:
+            table, key = row
+            store.exec(f"UPDATE {table} SET person_key=? WHERE {'id' if table == 'grants' else 'secret_hash'}=?",
+                       vault.lock(credential, private, "person key"), key)
+            _release(store, person_id)
+    if private is None:
+        private = vault.key_or_none(person_id)          # in hand already: a test, or the operator's own tools
+    if private is None and not _locked_out(store, person_id, besides=row):
+        private = _start_over(store, person_id)
+        if credential:
+            table, key = row
+            store.exec(f"UPDATE {table} SET person_key=? WHERE {'id' if table == 'grants' else 'secret_hash'}=?",
+                       vault.lock(credential, private, "person key"), key)
+    if private is not None:
+        vault.hold(person_id, private)
 
 
 # "Open your invite link again" read as a way back, and would have made someone new (simulation).
@@ -335,8 +489,8 @@ def client(store: Store, client_id: str) -> str | None:
 
 
 def _token(store: Store, kind: str, *, grant_id: str = "", data: dict | None = None,
-           expires_t: float | None = None) -> str:
-    token = secrets.token_urlsafe(32)
+           expires_t: float | None = None, token: str = "") -> str:
+    token = token or secrets.token_urlsafe(32)
     store.exec("INSERT INTO tokens(hash, kind, grant_id, data, created_t, expires_t) VALUES (?,?,?,?,?,?)",
                _hash(token), kind, grant_id, json.dumps(data or {}), store.now(), expires_t)
     return token
@@ -364,17 +518,20 @@ def allow(store: Store, request: str, invite: str = "") -> tuple[dict, str] | No
     """Allow pressed: a new connection, and an authorization code for its app. `invite` is the code the invite page
     left in this browser; only a community's current one is kept. It makes nobody: the connection's first tool call
     does (One door)."""
+    found = community_by_invite(store, invite[:40]) if invite else None
     with store.transaction():
         row = _live_token(store, request, "request")
         if not row:
             return None
         store.exec("DELETE FROM tokens WHERE hash=?", row["hash"])
         data = json.loads(row["data"])
-        found = store.one("SELECT invite_code FROM communities WHERE invite_code=?", invite[:40]) if invite else None
-        grant = _new_id(store, "grants", "k", 16)
+        grant, code = _new_id(store, "grants", "k", 16), secrets.token_urlsafe(32)
         store.exec("INSERT INTO grants(id, client_id, invite, created_t) VALUES (?,?,?,?)", grant, data["client_id"],
-                   found["invite_code"] if found else "", store.now())
-        return data, _token(store, "code", grant_id=grant, data=data, expires_t=store.now() + AUTH_CODE_S)
+                   found["invite_hash"] if found else "", store.now())
+        # The community's key goes on with the code, locked under it, until the app trades it for its tokens.
+        kept = {**data, "invite_key": vault.lock(vault.from_secret(code, "code"), found["key"], "invite key")} \
+            if found else data
+        return data, _token(store, "code", grant_id=grant, data=kept, expires_t=store.now() + AUTH_CODE_S, token=code)
 
 
 def deny(store: Store, request: str) -> dict | None:
@@ -390,20 +547,35 @@ def authorization_code(store: Store, code: str) -> dict | None:
     return {**json.loads(row["data"]), "grant": row["grant_id"], "expires_t": row["expires_t"]} if row else None
 
 
-def _access_token(store: Store, grant_id: str, scopes: list[str]) -> str:
-    return _token(store, "access", grant_id=grant_id, data={"scopes": scopes}, expires_t=store.now() + ACCESS_S)
+def _connection_key(refresh: str) -> bytes:
+    """What a connection's keys are locked under: its renewal token, which the server keeps only as a hash."""
+    return vault.from_secret(refresh, "connection")
+
+
+def _access_token(store: Store, grant_id: str, scopes: list[str], connection: bytes) -> str:
+    """Carries the connection's key locked under itself, so a call with it opens what the connection holds."""
+    token = secrets.token_urlsafe(32)
+    return _token(store, "access", grant_id=grant_id, token=token, expires_t=store.now() + ACCESS_S, data={
+        "scopes": scopes, "key": vault.lock(vault.from_secret(token, "access"), connection, "connection")})
 
 
 def exchange_code(store: Store, code: str) -> tuple[str, str] | None:
-    """An authorization code for an access token and the renewal token that replaces it, once."""
+    """An authorization code for an access token and the renewal token that replaces it, once. A community's key that
+    came with the code is locked again under the connection."""
     with store.transaction():
         row = _live_token(store, code, "code")
         if not row:
             return None
         store.exec("DELETE FROM tokens WHERE hash=?", row["hash"])
-        scopes = json.loads(row["data"]).get("scopes") or []
-        return (_access_token(store, row["grant_id"], scopes),
-                _token(store, "refresh", grant_id=row["grant_id"], data={"scopes": scopes}))
+        data = json.loads(row["data"])
+        scopes, refresh = data.get("scopes") or [], secrets.token_urlsafe(32)
+        connection = _connection_key(refresh)
+        if data.get("invite_key"):
+            community = vault.unlock(vault.from_secret(code, "code"), data["invite_key"], "invite key")
+            store.exec("UPDATE grants SET invite_key=? WHERE id=?", vault.lock(connection, community, "invite key"),
+                       row["grant_id"])
+        return (_access_token(store, row["grant_id"], scopes, connection),
+                _token(store, "refresh", grant_id=row["grant_id"], data={"scopes": scopes}, token=refresh))
 
 
 def renewal(store: Store, token: str) -> dict | None:
@@ -419,7 +591,16 @@ def renew(store: Store, token: str) -> tuple[str, str] | None:
         row = _live_token(store, token, "refresh")
         if not row:
             return None
-        return _access_token(store, row["grant_id"], json.loads(row["data"]).get("scopes") or []), token
+        connection = _connection_key(token)
+        # A connection from before locks takes its copy of its person's key at its first renewal.
+        g = store.one("SELECT person_id, person_key FROM grants WHERE id=?", row["grant_id"])
+        if g and g["person_id"] and not g["person_key"]:
+            private = _escrowed(store, g["person_id"])
+            if private is not None:
+                store.exec("UPDATE grants SET person_key=? WHERE id=?", vault.lock(connection, private, "person key"),
+                           row["grant_id"])
+                _release(store, g["person_id"])
+        return _access_token(store, row["grant_id"], json.loads(row["data"]).get("scopes") or [], connection), token
 
 
 def access(store: Store, token: str) -> dict | None:
@@ -446,7 +627,14 @@ def _end_grants(store: Store, where: str, *args) -> None:
         store.exec("DELETE FROM tokens WHERE grant_id=?", grant)
 
 
-def person_for_grant(store: Store, grant_id: str, tool: str) -> str:
+def _connection_from(store: Store, token: str) -> bytes | None:
+    """The connection key an access token carries; none for one from before locks."""
+    row = _live_token(store, token, "access") if token else None
+    locked = json.loads(row["data"]).get("key") if row else None
+    return vault.unlock(vault.from_secret(token, "access"), locked, "connection") if locked else None
+
+
+def person_for_grant(store: Store, grant_id: str, tool: str, token: str = "") -> str:
     """Whose connection this is, with the call logged. Its first call makes the person and joins the community of
     the invite it was allowed with, if that invite still works and the community still takes newcomers today; the
     chat's `check` then says what is missing (PROTOCOL.md §5)."""
@@ -456,22 +644,34 @@ def person_for_grant(store: Store, grant_id: str, tool: str) -> str:
                       "WHERE g.id=? AND g.revoked_t IS NULL", grant_id)
         if not g:
             raise NotYours()
+        connection = _connection_from(store, token)
         if g["person_id"]:
             if g["pid"] is None or g["deleted_t"] is not None:
                 raise Refused(_DELETED)
             person_id = g["person_id"]
+            _unlock(store, person_id, connection, g["person_key"], ("grants", grant_id))
         else:
-            found = store.one("SELECT id FROM communities WHERE invite_code=?", g["invite"]) if g["invite"] else None
+            # Only while the link it came from still works: a replaced link joins nobody (§5).
+            found = store.one("SELECT id FROM communities WHERE invite_hash=?", g["invite"]) if g["invite"] else None
             if not found and _today(store, "uninvited") >= UNINVITED_PER_DAY:
                 raise Refused("Bridge is taking no more new people without an invite today. Try again tomorrow, "
                               "or ask someone in a community for its invite link and add Bridge from its page.")
             person_id = new_person(store)
-            store.exec("UPDATE grants SET person_id=? WHERE id=?", person_id, grant_id)
-            if found:
+            store.exec("UPDATE grants SET person_id=?, person_key=? WHERE id=?", person_id,
+                       vault.lock(connection, vault.key(person_id), "person key") if connection else "", grant_id)
+            if not connection:
+                # A token from before locks, for a connection that had not called: its key waits, as everyone's
+                # from then did, for the connection's next renewal to take a copy.
+                store.exec("INSERT INTO escrow VALUES (?,?,?)", person_id, vault.encode(vault.key(person_id)),
+                           store.now() + ESCROW_S)
+            if found and connection and g["invite_key"]:
                 try:
-                    join(store, person_id, found["id"])
+                    join(store, person_id, found["id"],
+                         key=vault.unlock(connection, g["invite_key"], "invite key"))
                 except Refused:
                     found = None                     # full for today: they join from the chat once it takes them
+            elif found and not connection:
+                found = None                         # a call with no token in it, as only a test makes
             if not found:
                 _count(store, "uninvited")
         store.exec("INSERT INTO calls(t, person_id, tool) VALUES (?,?,?)", store.now(), person_id, tool)
@@ -543,18 +743,22 @@ def link_code(store: Store, person_id: str, *, replace: bool) -> str:
     """A code for the chat of another app, where it makes that connection this person's. With `replace`, its use ends
     every other connection of theirs. A new code of either kind ends any earlier one not yet used."""
     raw = "".join(secrets.choice(_ALPHABET) for _ in range(LINK_CODE))
+    # Their key goes with the code, locked under it; the operator's code, made with no key in hand, carries none,
+    # and whoever uses it starts over (`_start_over`).
+    private = vault.key_or_none(person_id)
     with store.transaction():
         _acting(store, person_id)
         store.exec("DELETE FROM link_codes WHERE person_id=? AND used_t IS NULL", person_id)
-        store.exec("INSERT INTO link_codes(hash, person_id, replace, created_t) VALUES (?,?,?,?)",
-                   _code_hash(raw), person_id, int(replace), store.now())
+        store.exec("INSERT INTO link_codes(hash, person_id, replace, created_t, person_key) VALUES (?,?,?,?,?)",
+                   _code_hash(raw), person_id, int(replace), store.now(),
+                   vault.lock(vault.from_code(raw, "link code"), private, "person key") if private else "")
     return "-".join(raw[i:i + 4] for i in range(0, LINK_CODE, 4))
 
 
 ALREADY_LINKED, LINKED, MOVED = "already", "linked", "moved"
 
 
-def use_link_code(store: Store, person_id: str, grant_id: str, code: str) -> tuple[str, str]:
+def use_link_code(store: Store, person_id: str, grant_id: str, code: str, token: str = "") -> tuple[str, str]:
     """This connection becomes the code's person, who joins whatever communities its empty account had joined; that
     account is erased. Only in a connection made by signing in, and only while its account holds nothing. Returns
     what happened, and whose the connection now is."""
@@ -569,7 +773,16 @@ def use_link_code(store: Store, person_id: str, grant_id: str, code: str) -> tup
         if not row or row["deleted_t"] is not None:
             raise dead
         target = row["person_id"]
+        typed = "".join(ch for ch in code.lower() if ch in _ALPHABET)
+        theirs = vault.unlock(vault.from_code(typed, "link code"), row["person_key"], "person key") \
+            if row["person_key"] else None
+        connection = _connection_from(store, token)
         if target == person_id:
+            # Their own code, in a connection of theirs that could not open their key: now it holds it too.
+            if theirs is not None and connection:
+                store.exec("UPDATE grants SET person_key=? WHERE id=?", vault.lock(connection, theirs, "person key"),
+                           grant_id)
+                vault.hold(target, theirs)
             return ALREADY_LINKED, target
         if not grant_id:
             raise Refused("a code works only in a connection made by adding Bridge at its one connector address "
@@ -580,10 +793,19 @@ def use_link_code(store: Store, person_id: str, grant_id: str, code: str) -> tup
                           "with `pass` first and sent again after. Otherwise keep the two apart, or, on your person's "
                           "say-so, `forget_me` here first and then use the code.")
         store.exec("UPDATE link_codes SET used_t=? WHERE hash=?", store.now(), row["hash"])
-        # Moved, not copied: the owner's count of who has ever joined stays what it was.
-        store.exec("UPDATE memberships SET person_id=? WHERE person_id=? AND community_id NOT IN "
-                   "(SELECT community_id FROM memberships WHERE person_id=?)", target, person_id, target)
-        store.exec("UPDATE grants SET person_id=? WHERE id=?", target, grant_id)
+        if theirs is None:
+            theirs = _start_over(store, target)
+        vault.hold(target, theirs)
+        # Moved, not copied: the owner's count of who has ever joined stays what it was. Each community's key is
+        # opened with the empty account's and sealed again to the person it now is.
+        for m in store.all("SELECT community_id, key FROM memberships WHERE person_id=? AND community_id NOT IN "
+                           "(SELECT community_id FROM memberships WHERE person_id=?)", person_id, target):
+            moved = _seal_to(store, target, vault.open_sealed(vault.key(person_id), m["key"], "community"),
+                             "community") if m["key"] else ""
+            store.exec("UPDATE memberships SET person_id=?, key=? WHERE person_id=? AND community_id=?", target,
+                       moved, person_id, m["community_id"])
+        store.exec("UPDATE grants SET person_id=?, person_key=? WHERE id=?", target,
+                   vault.lock(connection, theirs, "person key") if connection else "", grant_id)
         store.exec("UPDATE people SET deleted_t=? WHERE id=?", store.now(), person_id)
         store.exec("UPDATE memberships SET left_t=COALESCE(left_t, ?) WHERE person_id=?", store.now(), person_id)
         store.exec("DELETE FROM passes WHERE person_id=?", person_id)
@@ -613,12 +835,19 @@ def forget_me(store: Store, person_id: str, confirm: str) -> None:
         # A second one in flight wrote again, and moved the moment the first was made (review).
         _acting(store, person_id)
         now = store.now()
-        store.exec("UPDATE people SET name='', contact='', about='', notify='', nudged_t=NULL, deleted_t=? WHERE id=?",
-                   now, person_id)
+        store.exec("UPDATE people SET name='', contact='', about='', notify='', nudged_t=NULL, deleted_t=?, "
+                   "public='' WHERE id=?", now, person_id)
+        # Every key of theirs, and every name or contact they sealed to anyone: what nothing opens is gone.
+        store.exec("DELETE FROM escrow WHERE person_id=?", person_id)
+        store.exec("DELETE FROM reveals WHERE from_id=? OR to_id=?", person_id, person_id)
+        for table in ("memberships", "conversation_people", "grants", "connectors"):
+            column = "person_key" if table in ("grants", "connectors") else "key"
+            store.exec(f"UPDATE {table} SET {column}='' WHERE person_id=?", person_id)
         # everyone's messages: the guard looks only at its writer, so the others' may carry this one's name
         store.exec("DELETE FROM messages WHERE conversation_id IN "
                    "(SELECT conversation_id FROM conversation_people WHERE person_id=?)", person_id)
-        store.exec("UPDATE needs SET text='', closed_t=COALESCE(closed_t, ?) WHERE author_id=?", now, person_id)
+        store.exec("UPDATE needs SET text='', author_key='', same='', closed_t=COALESCE(closed_t, ?) WHERE "
+                   "author_id=?", now, person_id)
         store.exec("UPDATE memberships SET left_t=COALESCE(left_t, ?) WHERE person_id=?", now, person_id)
         store.exec("UPDATE connectors SET revoked_t=COALESCE(revoked_t, ?) WHERE person_id=?", now, person_id)
         _end_grants(store, "person_id=?", person_id)
@@ -634,12 +863,14 @@ def forget_me(store: Store, person_id: str, confirm: str) -> None:
 
 def create_community(store: Store, by: str, name: str) -> tuple[str, str]:
     """`by` is the person who owns it, and joins it. Returns (id, invite code)."""
-    name = _community_name(name)
+    name, key = _community_name(name), vault.new_key()
     with store.transaction():
         cid, code = _new_id(store, "communities", "g"), _new_invite_code()
-        store.exec("INSERT INTO communities(id, name, created_by, invite_code, created_t) VALUES (?,?,?,?,?)",
-                   cid, name, by, code, store.now())
-        join(store, by, cid)
+        store.exec("INSERT INTO communities(id, name, created_by, invite_hash, invite_code, link_key, created_t) "
+                   "VALUES (?,?,?,?,?,?,?)", cid, vault.lock_text(key, name, "community name"), by,
+                   vault.code_hash(code), vault.lock_text(key, code, "invite code"),
+                   vault.lock(_link_key(code), key, "community key"), store.now())
+        join(store, by, cid, key=key)
     return cid, code
 
 
@@ -659,13 +890,18 @@ def community_by_invite(store: Store, invite: str):
     lowercase is found only in its own case, so each word is tried as written before it is folded. A link from the
     end of a sentence was refused as replaced, and the person sent back to a friend who had the same link (review).
     Cut before it is folded: a folded megabyte took seconds. Of two links, the first, not whichever SQLite
-    returned (review 2)."""
+    returned (review 2). With it: the code as it was found, the community's key it opens, and its name."""
     words = [(w, w.strip("_-"), w.strip("_-").lower())
              for w in _CODE.findall(guard.visible(invite[:MAX_TEXT]))]
-    tried = {code for forms in words for code in forms}
-    found = {c["invite_code"]: c for c in store.all(
-        f"SELECT * FROM communities WHERE invite_code IN ({','.join('?' * len(tried))})", *tried)}
-    return next((found[code] for forms in words for code in forms if code in found), None)
+    tried = {vault.code_hash(code): code for forms in words for code in forms}
+    found = {tried[c["invite_hash"]]: c for c in store.all(
+        f"SELECT * FROM communities WHERE invite_hash IN ({','.join('?' * len(tried))})", *tried)}
+    code = next((code for forms in words for code in forms if code in found), None)
+    if code is None:
+        return None
+    key = vault.unlock(_link_key(code), found[code]["link_key"], "community key")
+    return {**dict(found[code]), "code": code, "key": key,
+            "name": vault.unlock_text(key, found[code]["name"], "community name")}
 
 
 def join_by_invite(store: Store, person_id: str, invite: str):
@@ -679,7 +915,7 @@ def join_by_invite(store: Store, person_id: str, invite: str):
         if not found:
             raise dead
         try:
-            join(store, person_id, found["id"])
+            join(store, person_id, found["id"], key=found["key"])
         except NotYours:
             raise dead from None
     return found
@@ -690,8 +926,14 @@ def is_member(store: Store, person_id: str, community_id: str) -> bool:
                           person_id, community_id))
 
 
-def join(store: Store, person_id: str, community_id: str) -> None:
-    """The community's open needs are in front of the newcomer from this moment."""
+def join(store: Store, person_id: str, community_id: str, *, key: bytes | None = None) -> None:
+    """The community's open needs are in front of the newcomer from this moment, and its key is sealed to them:
+    `key`, which came with the invite they used. Without one, whichever key this call holds that opens it — in a call
+    through a connection, only the joiner's own, which opens nothing: so only for the operator's tools and tests."""
+    if key is None:
+        key = next((k for k in (_held_community_key(store, pid, community_id) for pid in vault.held()) if k), None)
+        if key is None:
+            raise NotYours() if not store.one("SELECT 1 FROM communities WHERE id=?", community_id) else vault.Locked()
     with store.transaction():
         _acting(store, person_id)
         if not store.one("SELECT 1 FROM communities WHERE id=?", community_id):
@@ -700,6 +942,11 @@ def join(store: Store, person_id: str, community_id: str) -> None:
                      person_id, community_id):
             raise NotYours()
         if is_member(store, person_id, community_id):
+            # Already in: but one who started over holds no key to it until their link gives them one again.
+            if not store.one("SELECT key FROM memberships WHERE person_id=? AND community_id=?", person_id,
+                             community_id)["key"]:
+                store.exec("UPDATE memberships SET key=? WHERE person_id=? AND community_id=?",
+                           _seal_to(store, person_id, key, "community"), person_id, community_id)
             return
         # Counted for everyone's first community, however they came: counted only at a first call, an account
         # signed in with no invite could join from the chat and the limit would hold nobody.
@@ -708,9 +955,17 @@ def join(store: Store, person_id: str, community_id: str) -> None:
                 raise Refused("too many new people through this invite link today; try again tomorrow, or ask "
                               "whoever sent it")
             _count(store, f"joins {community_id}")
-        store.exec("INSERT INTO memberships(person_id, community_id, joined_t) VALUES (?,?,?) "
-                   "ON CONFLICT(person_id, community_id) DO UPDATE SET left_t=NULL, joined_t=excluded.joined_t",
-                   person_id, community_id, store.now())
+        store.exec("INSERT INTO memberships(person_id, community_id, joined_t, key) VALUES (?,?,?,?) "
+                   "ON CONFLICT(person_id, community_id) DO UPDATE SET left_t=NULL, joined_t=excluded.joined_t, "
+                   "key=excluded.key", person_id, community_id, store.now(),
+                   _seal_to(store, person_id, key, "community"))
+
+
+def _held_community_key(store: Store, person_id: str, community_id: str) -> bytes | None:
+    try:
+        return _community_key(store, person_id, community_id)
+    except vault.Locked:
+        return None
 
 
 def leave(store: Store, person_id: str, community_id: str) -> bool:
@@ -823,7 +1078,9 @@ def _dealt_on(store: Store, person_id: str, need_id: str) -> bool:
 def rename(store: Store, owner_id: str, community_id: str, name: str) -> None:
     name = _community_name(name)
     with store.transaction():
-        store.exec("UPDATE communities SET name=? WHERE id=?", name, _owned(store, owner_id, community_id))
+        community_id = _owned(store, owner_id, community_id)
+        store.exec("UPDATE communities SET name=? WHERE id=?",
+                   vault.lock_text(_community_key(store, owner_id, community_id), name, "community name"), community_id)
 
 
 def remove(store: Store, owner_id: str, ref: str, community_id: str) -> None:
@@ -861,12 +1118,15 @@ def invite_code(store: Store, person_id: str, community_id: str, *, new: bool = 
         c = store.one("SELECT created_by, invite_code FROM communities WHERE id=?", community_id)
         if not is_member(store, person_id, community_id):
             raise Refused(OWNER_LEFT) if c and c["created_by"] == person_id else NotYours()
+        key = _community_key(store, person_id, community_id)
         if not new:
-            return c["invite_code"]
+            return vault.unlock_text(key, c["invite_code"], "invite code")
         if c["created_by"] != person_id:
             raise Refused("only whoever started this community can replace its link")
         code = _new_invite_code()
-        store.exec("UPDATE communities SET invite_code=? WHERE id=?", code, community_id)
+        store.exec("UPDATE communities SET invite_hash=?, invite_code=?, link_key=? WHERE id=?", vault.code_hash(code),
+                   vault.lock_text(key, code, "invite code"), vault.lock(_link_key(code), key, "community key"),
+                   community_id)
     return code
 
 
@@ -900,11 +1160,14 @@ def go(store: Store, person_id: str, text: str, community_id: str | None = None,
         if store.one("SELECT COUNT(*) n FROM needs WHERE author_id=? AND created_t>?",
                      person_id, now - 86400)["n"] >= NEEDS_PER_DAY:
             raise Refused(f"that is {NEEDS_PER_DAY} needs in a day; the rest can wait until tomorrow")
-        need_id = _new_id(store, "needs", "n")
-        store.exec("INSERT INTO needs(id, author_id, text, created_t, expires_t, wants) VALUES (?,?,?,?,?,?)",
-                   need_id, person_id, text, now, now + (NEED_TTL_S if days is None else days * 86400), people)
+        need_id, key = _new_id(store, "needs", "n"), vault.new_key()
+        store.exec("INSERT INTO needs(id, author_id, text, created_t, expires_t, wants, author_key, same) "
+                   "VALUES (?,?,?,?,?,?,?,?)", need_id, person_id, vault.lock_text(key, text, "need"), now,
+                   now + (NEED_TTL_S if days is None else days * 86400), people,
+                   _seal_to(store, person_id, key, "need"), vault.mark(_self(person_id), _same(text)))
         for cid in communities:
-            store.exec("INSERT INTO need_communities(need_id, community_id) VALUES (?,?)", need_id, cid)
+            store.exec("INSERT INTO need_communities(need_id, community_id, key) VALUES (?,?,?)", need_id, cid,
+                       vault.lock(_community_key(store, person_id, cid), key, "need key"))
     return need_id
 
 
@@ -917,9 +1180,10 @@ def _already_out(store: Store, person_id: str, text: str, communities: list[str]
     own open needs sent the same need again (diary study). Sent to communities it has not reached yet — a person
     who started one after sending it — the same need goes on there, and its id comes back: a second need with
     the same words showed twice to everyone in both (review)."""
+    same = vault.mark(_self(person_id), _same(text))
     for n in store.all("SELECT * FROM needs WHERE author_id=? AND closed_t IS NULL "
                        "AND expires_t>?", person_id, store.now()):
-        if _same(n["text"]) != _same(text):
+        if n["same"] != same:
             continue
         if _full(n):
             raise Refused(f"your person already has this need out [{n['id']}], and it is full: it reaches nobody new. "
@@ -934,8 +1198,10 @@ def _already_out(store: Store, person_id: str, text: str, communities: list[str]
         if n["wants"] != people:
             raise Refused(f"your person already has this need out [{n['id']}] with other settings; `pass` it first "
                           "to send it differently")
+        key = _need_key(store, person_id, n)
         for cid in missing:
-            store.exec("INSERT INTO need_communities(need_id, community_id) VALUES (?,?)", n["id"], cid)
+            store.exec("INSERT INTO need_communities(need_id, community_id, key) VALUES (?,?,?)", n["id"], cid,
+                       vault.lock(_community_key(store, person_id, cid), key, "need key"))
         return n["id"]
     return None
 
@@ -997,6 +1263,42 @@ def _in_front(store: Store, need_id: str, reader_id: str, gone: str) -> tuple[sq
 
 
 CLEARED, MET = "cleared", "met"
+
+
+def _hand_over(store: Store, person_id: str, conversation_id: str, to: list[str]) -> None:
+    """At a yes, this person's name and contact, sealed to each other person in it, to be shown once it is a deal:
+    whoever's yes makes the deal holds no one's key but their own."""
+    row, mine = store.one("SELECT name, contact FROM people WHERE id=?", person_id), _self(person_id)
+    card = json.dumps({k: vault.unlock_text(mine, row[k], k) for k in ("name", "contact")}).encode()
+    for other in to:
+        store.exec("INSERT OR REPLACE INTO reveals(conversation_id, from_id, to_id, sealed) VALUES (?,?,?,?)",
+                   conversation_id, person_id, other, _seal_to(store, other, card, "reveal"))
+
+
+def _handed(store: Store, from_id: str, to_id: str, conversation_id: str) -> dict | None:
+    """What a deal handed `to_id` of `from_id`: their name and contact, opened with `to_id`'s key. None for someone
+    deleted since, or for what nothing opens."""
+    row = store.one("SELECT r.sealed FROM reveals r JOIN people p ON p.id=r.from_id AND p.deleted_t IS NULL "
+                    "WHERE r.conversation_id=? AND r.from_id=? AND r.to_id=?", conversation_id, from_id, to_id)
+    try:
+        return json.loads(vault.open_sealed(vault.key(to_id), row["sealed"], "reveal")) if row else None
+    except vault.Locked:
+        return None
+
+
+def _text_in(link, key: bytes | None) -> str:
+    """A need's words, as everyone in a conversation on it reads them: with the conversation's key."""
+    try:
+        return vault.unlock_text(vault.unlock(key, link["key"], "need in conversation"), link["text"], "need") \
+            if key and link["key"] and link["text"] else ""
+    except vault.Locked:
+        return ""
+
+
+def _hand_over_again(store: Store, person_id: str) -> None:
+    """A changed name or contact reaches everyone it was handed to, as a deal shows them as they are now."""
+    for r in store.all("SELECT conversation_id, to_id FROM reveals WHERE from_id=?", person_id):
+        _hand_over(store, person_id, r["conversation_id"], [r["to_id"]])
 
 
 def _conversation(store: Store, person_id: str, conversation_id: str, *, or_none: bool = False):
@@ -1115,15 +1417,18 @@ def _open(store: Store, person_id: str, need_ids: list[str]) -> tuple[sqlite3.Ro
     if len(authors) + 1 > MAX_IN:
         raise Refused(f"one conversation holds at most {MAX_IN} people, its starter included; these needs bring "
                       f"{len(authors) + 1}. Nothing was sent.")
-    conv_id, now = _new_id(store, "conversations", "c"), store.now()
+    conv_id, now, key = _new_id(store, "conversations", "c"), store.now(), vault.new_key()
     store.exec("INSERT INTO conversations(id, starter_id, created_t, last_t) VALUES (?,?,?,?)", conv_id, person_id,
                now, now)
+    # Everyone in it holds its key, and the needs it is on open with it: an author reads the others' needs here,
+    # though none reached them.
     for need, via in needs:
-        store.exec("INSERT INTO conversation_needs(conversation_id, need_id, author_id, via) VALUES (?,?,?,?)",
-                   conv_id, need["id"], need["author_id"], via)
+        store.exec("INSERT INTO conversation_needs(conversation_id, need_id, author_id, via, key) VALUES (?,?,?,?,?)",
+                   conv_id, need["id"], need["author_id"], via,
+                   vault.lock(key, _need_key(store, person_id, need), "need in conversation"))
     for seat, pid in enumerate([person_id, *authors], 1):
-        store.exec("INSERT INTO conversation_people(conversation_id, person_id, seat) VALUES (?,?,?)", conv_id, pid,
-                   seat)
+        store.exec("INSERT INTO conversation_people(conversation_id, person_id, seat, key) VALUES (?,?,?,?)", conv_id,
+                   pid, seat, _seal_to(store, pid, key, "conversation"))
     return store.one("SELECT * FROM conversations WHERE id=?", conv_id), True
 
 
@@ -1187,8 +1492,9 @@ def reply(store: Store, person_id: str, to: str, text: str, *, agree_too: bool =
                          person_id, store.now() - 86400)["n"] >= MESSAGES_PER_DAY:
                 raise Refused(f"that is {MESSAGES_PER_DAY} messages in a day; the rest can wait until tomorrow")
             _unidentifying(store, person_id, text)
-            store.exec("INSERT INTO messages(conversation_id, sender_id, text, t) VALUES (?,?,?,?)",
-                       conv["id"], person_id, text, store.now())
+            store.exec("INSERT INTO messages(conversation_id, sender_id, text, t) VALUES (?,?,?,?)", conv["id"],
+                       person_id, vault.lock_text(_conversation_key(store, person_id, conv["id"]), text, "message"),
+                       store.now())
             # A yes that stood through a later message was to terms the message may have changed: one side said yes,
             # the other then asked for more and said yes itself, and it was a deal (design review). And the week runs
             # from the first message still unanswered: a sender who kept writing kept a silent conversation open.
@@ -1279,6 +1585,7 @@ def _agree(store: Store, person_id: str, conversation_id: str, *, revision: int 
         now = store.now()
         store.exec("UPDATE conversation_people SET yes_t=?, yes_in=? WHERE conversation_id=? AND person_id=?", now,
                    signature, conv["id"], person_id)
+        _hand_over(store, person_id, conv["id"], [p["person_id"] for p in inside if p["person_id"] != person_id])
         if not all(_holds_yes(p, signature) for p in inside if p["person_id"] != person_id):
             return YES
         dealt = [p["person_id"] for p in inside]
@@ -1385,10 +1692,13 @@ def report(store: Store, person_id: str, ref: str) -> str:
         # them which anonymous needs were theirs (review 2).
         delivered = (owner != reported and is_member(store, owner, community)
                      and not _dealt(store, person_id, reported))
+        # The owner reads a reported conversation with its key, sealed to them by the reporter, who holds it.
+        key = _seal_to(store, owner, _conversation_key(store, person_id, conv_id), "report") \
+            if delivered and conv_id else ""
         store.exec("INSERT INTO reports(id, community_id, reporter_id, reported_id, need_id, conversation_id, t, "
-                   "closed_t, seat) VALUES (?,?,?,?,?,?,?,?,?)", _new_id(store, "reports", "r"),
+                   "closed_t, seat, key) VALUES (?,?,?,?,?,?,?,?,?,?)", _new_id(store, "reports", "r"),
                    community if delivered else "", person_id, reported if delivered else "", need_id, conv_id,
-                   store.now(), None if delivered else store.now(), seat)
+                   store.now(), None if delivered else store.now(), seat, key)
     if delivered:
         _nudge(store, owner)
     return REPORTED
@@ -1411,7 +1721,7 @@ def report_community(store: Store, owner_id: str, ref: str) -> str | None:
     return r["community_id"] if r else None
 
 
-def _reported(store: Store, community_id: str) -> list[dict]:
+def _reported(store: Store, owner_id: str, community_id: str) -> list[dict]:
     """Open reports in a community, with what the reported side wrote before any deal: after one, their words may
     name them. A deal closes the reports on its conversation; one that older code left open is held back."""
     out = []
@@ -1420,12 +1730,17 @@ def _reported(store: Store, community_id: str) -> list[dict]:
                        "FROM conversations c WHERE c.id=r.conversation_id AND c.deal_t IS NOT NULL) ORDER BY t",
                        community_id):
         if r["conversation_id"]:
-            wrote = [m["text"] for m in store.all(
-                "SELECT text FROM messages WHERE conversation_id=? AND sender_id=? ORDER BY id",
-                r["conversation_id"], r["reported_id"])][-MESSAGES_WAITING:]
+            try:
+                key = vault.open_sealed(vault.key(owner_id), r["key"], "report")
+                wrote = [vault.unlock_text(key, m["text"], "message") for m in store.all(
+                    "SELECT text FROM messages WHERE conversation_id=? AND sender_id=? ORDER BY id",
+                    r["conversation_id"], r["reported_id"])][-MESSAGES_WAITING:]
+            except vault.Locked:
+                wrote = []
         else:
-            need = store.one("SELECT text FROM needs WHERE id=?", r["need_id"])
-            wrote = [need["text"]] if need and need["text"] else []
+            need = store.one("SELECT * FROM needs WHERE id=?", r["need_id"])
+            text = _need_text(store, owner_id, need) if need else ""
+            wrote = [text] if text else []
         out.append({"id": r["id"], "kind": "conversation" if r["conversation_id"] else "need", "wrote": wrote})
     return out
 
@@ -1449,6 +1764,7 @@ def withdraw(store: Store, person_id: str, conversation_id: str) -> str:
             raise Refused("that conversation is over; there is nothing to take back")
         store.exec("UPDATE conversation_people SET yes_t=NULL WHERE conversation_id=? AND person_id=?", conv["id"],
                    person_id)
+        store.exec("DELETE FROM reveals WHERE conversation_id=? AND from_id=?", conv["id"], person_id)
         return WITHDRAWN
 
 
@@ -1511,8 +1827,20 @@ def inbox(store: Store, person_id: str, *, passed: bool = False, needs_from: str
         def who(pid: str, group=group, seat_of=seat_of) -> str:
             return "you" if pid == person_id else f"person {seat_of.get(pid, '?')}" if group else "them"
 
-        messages = store.all("SELECT id, sender_id, text, t FROM messages WHERE conversation_id=? ORDER BY id",
-                             conv["id"])
+        try:
+            key = _conversation_key(store, person_id, conv["id"])
+        except vault.Locked:
+            continue                    # sealed to a key of theirs that is gone: nothing in it opens for them
+
+        def opened(blob: str, purpose: str, key=key) -> str:
+            try:
+                return vault.unlock_text(key, blob, purpose) if key else ""
+            except vault.Locked:
+                return ""
+
+        messages = [{**dict(m), "text": opened(m["text"], "message")} for m in store.all(
+            "SELECT id, sender_id, text, t FROM messages WHERE conversation_id=? ORDER BY id", conv["id"])]
+        links = [{**dict(link), "text": _text_in(link, key)} for link in links]
         revision = len(messages)
         if conv["deal_t"]:
             # A deal ends the conversation, and what each side last said before it is where the when and
@@ -1526,8 +1854,7 @@ def inbox(store: Store, person_id: str, *, passed: bool = False, needs_from: str
         started = conv["starter_id"] == person_id
 
         def community_of(cid: str) -> str:
-            row = store.one("SELECT name FROM communities WHERE id=?", cid)
-            return row["name"] if row else ""
+            return _community_name_for(store, person_id, cid)
         # Each person is shown the community they are joined to it by: its starter, every need's; an author, only
         # their own, since the others' would tell them which communities the starter is in.
         via = links[0]["via"] if not group else "" if started or not mine_by else mine_by[0]["via"]
@@ -1551,10 +1878,8 @@ def inbox(store: Store, person_id: str, *, passed: bool = False, needs_from: str
             shown = []
             for p in people:
                 if p["dealt"] and p["person_id"] != person_id:
-                    o = store.one("SELECT name, contact, deleted_t FROM people WHERE id=?", p["person_id"])
-                    shown.append(None if o["deleted_t"] else {"name": o["name"], "contact": o["contact"]}
-                                 if not group else {"who": who(p["person_id"]), "name": o["name"],
-                                                    "contact": o["contact"]})
+                    o = _handed(store, p["person_id"], person_id, conv["id"])
+                    shown.append(None if o is None else o if not group else {"who": who(p["person_id"]), **o})
             if group:
                 item["everyone"] = shown
             else:
@@ -1608,18 +1933,18 @@ def inbox(store: Store, person_id: str, *, passed: bool = False, needs_from: str
         # "they went" from "it closed" (review).
         page = store.all(f"SELECT n.* {open_needs} ORDER BY n.created_t DESC, n.rowid DESC LIMIT ?",
                          *args, NEEDS_SHOWN + 1)
-        reached = [{"id": n["id"], "text": n["text"], "expires_t": n["expires_t"], "people": n["wants"],
-                    "community": store.one("SELECT name FROM communities WHERE id=?",
-                                           _via(store, n["id"], person_id))["name"]}
+        reached = [{"id": n["id"], "text": _need_text(store, person_id, n), "expires_t": n["expires_t"],
+                    "people": n["wants"], "community": _community_name_for(store, person_id,
+                                                                           _via(store, n["id"], person_id))}
                    for n in page[:NEEDS_SHOWN]]
         more = max(0, store.one(f"SELECT COUNT(*) n {open_needs}", *args)["n"] - NEEDS_SHOWN)
     # The count is the conversations listed above, not every one ever opened: it said "1 conversation"
     # about one its author had passed, which no longer appeared anywhere (swarm).
     mine = [] if needs_from else [{
-             "id": n["id"], "text": n["text"], "expires_t": n["expires_t"], "conversations": n["conversations"],
-             "people": n["wants"], "deals": n["deals"], "full": _full(n),
-             "communities": [c["name"] for c in store.all(
-                 "SELECT c.name FROM need_communities nc JOIN communities c ON c.id=nc.community_id "
+             "id": n["id"], "text": _need_text(store, person_id, n), "expires_t": n["expires_t"],
+             "conversations": n["conversations"], "people": n["wants"], "deals": n["deals"], "full": _full(n),
+             "communities": [_community_name_for(store, person_id, c["id"]) for c in store.all(
+                 "SELECT c.id FROM need_communities nc JOIN communities c ON c.id=nc.community_id "
                  "JOIN memberships m ON m.community_id=nc.community_id AND m.person_id=? AND m.left_t IS NULL "
                  "WHERE nc.need_id=? ORDER BY c.created_t, c.rowid", person_id, n["id"])]}
             for n in store.all(
@@ -1630,9 +1955,10 @@ def inbox(store: Store, person_id: str, *, passed: bool = False, needs_from: str
         now - QUIET_TTL_S, person_id, now)]
     reports = []
     for c in [] if needs_from else store.all(
-            "SELECT c.id, c.name FROM communities c JOIN memberships m ON m.community_id=c.id "
+            "SELECT c.id FROM communities c JOIN memberships m ON m.community_id=c.id "
             "AND m.person_id=? AND m.left_t IS NULL WHERE c.created_by=?", person_id, person_id):
-        reports += [{**r, "community": c["name"]} for r in _reported(store, c["id"])]
+        reports += [{**r, "community": _community_name_for(store, person_id, c["id"])}
+                    for r in _reported(store, person_id, c["id"])]
     return {"me": me(store, person_id), "conversations": conversations, "reached": reached, "more": more, "mine": mine,
             "passed": passed, "reports": reports, "page": bool(needs_from),
             "next": page[NEEDS_SHOWN]["id"] if len(page) > NEEDS_SHOWN else None}
@@ -1654,7 +1980,8 @@ def sweep(store: Store) -> None:
             "THEN MAX(p.passed_t) END FROM conversation_people p WHERE p.conversation_id=c.id), c.last_t + ?) < ?",
             QUIET_TTL_S, cutoff)]
         for table, column in (("messages", "conversation_id"), ("conversation_needs", "conversation_id"),
-                              ("conversation_people", "conversation_id"), ("conversations", "id")):
+                              ("conversation_people", "conversation_id"), ("reveals", "conversation_id"),
+                              ("conversations", "id")):
             for i in range(0, len(ended), 500):
                 chunk = ended[i:i + 500]
                 store.exec(f"DELETE FROM {table} WHERE {column} IN ({','.join('?' * len(chunk))})", *chunk)
@@ -1674,6 +2001,7 @@ def sweep(store: Store) -> None:
         store.exec("DELETE FROM clients WHERE created_t < ? AND id NOT IN (SELECT client_id FROM grants)",
                    now - 86400)
         store.exec("DELETE FROM link_codes WHERE created_t < ?", now - LINK_CODE_S)
+        store.exec("DELETE FROM escrow WHERE until_t < ?", now)
         store.exec("DELETE FROM daily WHERE day < ?", _day(store) - 1)
 
 
@@ -1697,3 +2025,112 @@ def stats(store: Store) -> dict:
             # Nudges and the operator's alerts share ntfy.sh's 250 a day per IP (docs/OPERATIONS.md).
             "nudges_today": store.one("SELECT COUNT(*) n FROM calls WHERE tool='nudge' AND t>?", now - 86400)["n"],
             "calls": {r["tool"]: r["n"] for r in store.all("SELECT tool, COUNT(*) n FROM calls GROUP BY tool")}}
+
+
+# -- schema 8 → 9: locking what was there before ------------------------------------------------------------------
+
+def _lock_everything(db: sqlite3.Connection) -> None:
+    """Everything members wrote, locked (bridge/vault.py). No connection is behind a migration, so each person's new
+    key is kept open in `escrow` until each connection they already had takes its own copy, at its next use, or for
+    ESCROW_S at most: the one window in which a key is kept open, and only for what was there before. Codes in flight
+    are dropped: a sign-in under way pastes its invite link into the chat instead, and a code is asked for again."""
+    import time
+    now = time.time()
+    db.execute("BEGIN")
+    try:
+        for statement in (
+                "ALTER TABLE people ADD COLUMN public TEXT NOT NULL DEFAULT ''",
+                "CREATE TABLE escrow (person_id TEXT PRIMARY KEY, private TEXT NOT NULL, until_t REAL NOT NULL)",
+                "ALTER TABLE connectors ADD COLUMN person_key TEXT NOT NULL DEFAULT ''",
+                "ALTER TABLE grants ADD COLUMN invite_key TEXT NOT NULL DEFAULT ''",
+                "ALTER TABLE grants ADD COLUMN person_key TEXT NOT NULL DEFAULT ''",
+                "ALTER TABLE link_codes ADD COLUMN person_key TEXT NOT NULL DEFAULT ''",
+                "ALTER TABLE memberships ADD COLUMN key TEXT NOT NULL DEFAULT ''",
+                "ALTER TABLE needs ADD COLUMN author_key TEXT NOT NULL DEFAULT ''",
+                "ALTER TABLE needs ADD COLUMN same TEXT NOT NULL DEFAULT ''",
+                "ALTER TABLE need_communities ADD COLUMN key TEXT NOT NULL DEFAULT ''",
+                "ALTER TABLE conversation_needs ADD COLUMN key TEXT NOT NULL DEFAULT ''",
+                "ALTER TABLE conversation_people ADD COLUMN key TEXT NOT NULL DEFAULT ''",
+                "ALTER TABLE reports ADD COLUMN key TEXT NOT NULL DEFAULT ''",
+                "CREATE TABLE reveals (conversation_id TEXT NOT NULL, from_id TEXT NOT NULL, to_id TEXT NOT NULL, "
+                "sealed TEXT NOT NULL, PRIMARY KEY (conversation_id, from_id, to_id))",
+                "CREATE TABLE communities9 (id TEXT PRIMARY KEY, name TEXT NOT NULL, created_by TEXT NOT NULL, "
+                "invite_hash TEXT NOT NULL UNIQUE, invite_code TEXT NOT NULL, link_key TEXT NOT NULL, "
+                "created_t REAL NOT NULL)"):
+            db.execute(statement)
+        rows = lambda sql, *args: db.execute(sql, args).fetchall()         # noqa: E731
+        private, public, card = {}, {}, {}
+        for p in rows("SELECT * FROM people WHERE deleted_t IS NULL"):
+            private[p["id"]], public[p["id"]] = vault.new_pair()
+            mine, card[p["id"]] = vault.self_key(private[p["id"]]), {"name": p["name"], "contact": p["contact"]}
+            db.execute("UPDATE people SET public=?, name=?, contact=?, about=? WHERE id=?", (
+                public[p["id"]], *(vault.lock_text(mine, p[k], k) for k in ("name", "contact", "about")), p["id"]))
+            db.execute("INSERT INTO escrow VALUES (?,?,?)", (p["id"], vault.encode(private[p["id"]]), now + ESCROW_S))
+
+        def seal(person_id: str, data: bytes, purpose: str) -> str:
+            return vault.seal(public[person_id], data, purpose) if person_id in public else ""
+        community, owner = {}, {}
+        for c in rows("SELECT * FROM communities"):
+            community[c["id"]], owner[c["id"]] = vault.new_key(), c["created_by"]
+            key = community[c["id"]]
+            db.execute("INSERT INTO communities9 VALUES (?,?,?,?,?,?,?)", (
+                c["id"], vault.lock_text(key, c["name"], "community name"), c["created_by"],
+                vault.code_hash(c["invite_code"]), vault.lock_text(key, c["invite_code"], "invite code"),
+                vault.lock(_link_key(c["invite_code"]), key, "community key"), c["created_t"]))
+        db.execute("DROP TABLE communities")
+        db.execute("ALTER TABLE communities9 RENAME TO communities")
+        for m in rows("SELECT * FROM memberships WHERE banned_t IS NULL"):
+            db.execute("UPDATE memberships SET key=? WHERE person_id=? AND community_id=?",
+                       (seal(m["person_id"], community[m["community_id"]], "community"), m["person_id"],
+                        m["community_id"]))
+        need = {}
+        for n in rows("SELECT * FROM needs"):
+            need[n["id"]] = vault.new_key()
+            author = n["author_id"]
+            db.execute("UPDATE needs SET text=?, author_key=?, same=? WHERE id=?", (
+                vault.lock_text(need[n["id"]], n["text"], "need"), seal(author, need[n["id"]], "need"),
+                vault.mark(vault.self_key(private[author]), _same(n["text"])) if author in private and n["text"]
+                else "", n["id"]))
+            for nc in rows("SELECT community_id FROM need_communities WHERE need_id=?", n["id"]):
+                if nc["community_id"] in community:
+                    db.execute("UPDATE need_communities SET key=? WHERE need_id=? AND community_id=?", (
+                        vault.lock(community[nc["community_id"]], need[n["id"]], "need key"), n["id"],
+                        nc["community_id"]))
+        for c in rows("SELECT * FROM conversations"):
+            key = vault.new_key()
+            for cn in rows("SELECT need_id FROM conversation_needs WHERE conversation_id=?", c["id"]):
+                if cn["need_id"] in need:
+                    db.execute("UPDATE conversation_needs SET key=? WHERE conversation_id=? AND need_id=?", (
+                        vault.lock(key, need[cn["need_id"]], "need in conversation"), c["id"], cn["need_id"]))
+            people = rows("SELECT * FROM conversation_people WHERE conversation_id=?", c["id"])
+            for cp in people:
+                db.execute("UPDATE conversation_people SET key=? WHERE conversation_id=? AND person_id=?",
+                           (seal(cp["person_id"], key, "conversation"), c["id"], cp["person_id"]))
+                # A name and contact go to whoever a yes of theirs was given with, as at a yes now.
+                if (cp["yes_t"] or cp["dealt"]) and cp["person_id"] in card:
+                    for other in people:
+                        if other["person_id"] != cp["person_id"] and other["person_id"] in public:
+                            db.execute("INSERT OR REPLACE INTO reveals VALUES (?,?,?,?)", (
+                                c["id"], cp["person_id"], other["person_id"],
+                                seal(other["person_id"], json.dumps(card[cp["person_id"]]).encode(), "reveal")))
+            for m in rows("SELECT id, text FROM messages WHERE conversation_id=?", c["id"]):
+                db.execute("UPDATE messages SET text=? WHERE id=?", (vault.lock_text(key, m["text"], "message"),
+                                                                     m["id"]))
+            for r in rows("SELECT id, community_id FROM reports WHERE conversation_id=? AND community_id<>''",
+                          c["id"]):
+                db.execute("UPDATE reports SET key=? WHERE id=?",
+                           (seal(owner.get(r["community_id"], ""), key, "report"), r["id"]))
+        db.execute("UPDATE grants SET invite=''")
+        db.execute("DELETE FROM tokens WHERE kind IN ('request', 'code')")
+        db.execute("DELETE FROM link_codes WHERE used_t IS NULL")
+        db.execute("PRAGMA user_version=9")
+        db.execute("COMMIT")
+    except BaseException:
+        db.execute("ROLLBACK")
+        raise
+    # Nothing written before may stay in a free page or the log: the file is written afresh, and the log emptied.
+    db.execute("VACUUM")
+    db.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+
+
+MIGRATIONS[8] = _lock_everything

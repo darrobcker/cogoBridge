@@ -277,7 +277,7 @@ def test_communities_from_chat(live, store):
     sent = call(rae, "go", text="anyone for a chess game?", community_id=climbers)
     assert "small" in sent and "<<<Climbers>>>" in sent                    # and any member, that it is small
     assert "<<<Friends>>>" not in sent                                     # small too, but not sent there
-    friends = store.one("SELECT id FROM communities WHERE name='Friends'")["id"]
+    friends = store.one("SELECT id FROM communities ORDER BY rowid LIMIT 1")["id"]    # the live fixture's Friends
     for _ in range(net.SMALL):
         net.join(store, net.new_person(store), friends)
     assert "small" not in call(rae, "go", text="anyone for a walk?", community_id=friends)
@@ -458,7 +458,8 @@ def test_the_first_512_characters_of_the_instructions_stand_alone(store):
         first = head[:head.index("\n\n")]
         if operator:
             assert operator in first
-        order = [first.index(part) for part in ("Bridge", "read everything", "anyone else use this AI account",
+        order = [first.index(part) for part in ("Bridge", "cannot open what members write",
+                                                "anyone else use this AI account",
                                                 "`about`", "`check`", "`go`", "how they want news")]
         assert order == sorted(order), first
         assert "goes through that person" not in first and "no one else" in first
@@ -530,10 +531,10 @@ def test_a_page_reached_through_a_changed_link_remembers_the_code_as_stored(stor
         b = browser(store)
         b.get(f"/join/{reached}")
         assert b.cookies.get(web.INVITE) == invite
-        grant = store.one("SELECT id FROM grants ORDER BY rowid DESC LIMIT 1")
-        sign_in(b, SITE)
-        grant = store.one("SELECT id FROM grants ORDER BY rowid DESC LIMIT 1")["id"]
-        assert net.is_member(store, net.person_for_grant(store, grant, "check"), community_id), reached
+        connection = sign_in(b, SITE)
+        grant = net.access(store, connection.token)["grant"]
+        assert net.is_member(store, net.person_for_grant(store, grant, "check", connection.token), community_id), \
+            reached
 
 
 def test_the_join_page_asks_first_whether_they_already_use_Bridge(store):
@@ -554,7 +555,7 @@ def test_the_join_page_says_who_can_read_what_before_the_button(store):
     computer (a parallel review) — until Bridge is listed there, which the page then says instead."""
     _, invite = net.create_community(store, net.new_person(store), "Friends")
     page = browser(store).get(f"/join/{invite}").text
-    assert page.index("Pat Operator can read everything") < page.index("<button")
+    assert page.index("Pat Operator cannot read what is stored") < page.index("<button")
     assert page.index("(a paid plan), in a computer's browser every time") < page.index("<button")
     assert "on a computer the first time" in page
     listed = browser(store, claude_listing="https://claude.ai/directory/connectors/Bridge",
@@ -683,7 +684,7 @@ def test_a_theme_changes_the_frame_and_never_the_words_before_a_button(store, tm
     (tmp_path / "static" / "favicon.ico").write_bytes(b"ours")
     b = browser(store, theme=str(tmp_path))
     join = b.get(f"/join/{invite}").text
-    assert join.startswith("<html><body class='painted join'>") and "Pat Operator can read everything" in join
+    assert join.startswith("<html><body class='painted join'>") and "Pat Operator cannot read what is stored" in join
     assert b.get("/").text.endswith("Our own</body></html>")
     assert b.get("/static/painting.jpg").content == b"jpeg" and b.get("/favicon.ico").content == b"ours"
     plain = browser(store)
@@ -774,9 +775,9 @@ def test_allow_makes_a_connection_and_nobody_until_its_first_call(store, clock):
     assert net.stats(store)["people"] == 1 and net.me(store, owner)["communities"][0]["joined"] == 0
     assert store.one("SELECT COUNT(*) n FROM calls WHERE tool LIKE 'allow %'")["n"] == 1
     grant = net.access(store, connection.token)["grant"]
-    pid = net.person_for_grant(store, grant, "check")
+    pid = net.person_for_grant(store, grant, "check", connection.token)
     assert net.is_member(store, pid, community_id) and net.me(store, owner)["communities"][0]["joined"] == 1
-    assert net.person_for_grant(store, grant, "go") == pid and net.stats(store)["people"] == 2
+    assert net.person_for_grant(store, grant, "go", connection.token) == pid and net.stats(store)["people"] == 2
 
 
 def test_the_allow_page_names_the_app_where_it_returns_and_the_community(store, clock):
@@ -795,7 +796,7 @@ def test_the_allow_page_names_the_app_where_it_returns_and_the_community(store, 
     assert "&lt;b&gt;Claude&lt;/b&gt;" in page.text and "x" * 60 not in page.text        # escaped, and cut
     assert "app.test" in page.text and "<strong>Friends</strong>" in page.text
     assert "Fewer than ten" in page.text and page.headers["cache-control"] == "no-store, no-transform"
-    assert page.text.index("read everything") < page.text.index("<button")
+    assert page.text.index("cannot read what is stored") < page.text.index("<button")
     ref = parse_qs(urlparse(asked.headers["location"]).query)["r"][0]
     cancelled = b.post("/allow", data={"r": ref, "choice": "deny"}, follow_redirects=False)
     assert cancelled.status_code == 303

@@ -23,7 +23,7 @@ from mcp.shared.exceptions import MCPError
 from mcp.types import INVALID_PARAMS, CallToolResult, Icon, RequestParams, TextContent, ToolAnnotations
 from pydantic import BaseModel
 
-from . import guard, net, notify
+from . import guard, net, notify, vault
 from .store import Store
 
 
@@ -31,12 +31,12 @@ def instructions(operator: str = "") -> str:
     """What every assistant is told. Hosts keep an old copy until their person refreshes and none promises to show
     it whole, so the first paragraph stands alone, within 512 characters: what this is and who can read it, one
     safety question, a `check`, `go`, how to hear back, with room for an operator's name of 80 characters."""
-    runs = (f"{operator} runs this server and can read everything on it; say so." if operator
-            else "Whoever runs this server can read everything on it; say so.")
-    return f"""Bridge: your person's needs reach the AIs in their communities, without their name; if both say
-yes, each gets the other's name and contact. {runs} Ask: does anyone else use this AI account or make decisions
-for them? Note in `about` whose yes counts; take no one else's. Each chat, `check` first, then send a need with
-`go`. Replies take days; ask how they want news.
+    runs = (f"{operator} runs this server but cannot open what members write; say so." if operator
+            else "Whoever runs this server cannot open what members write; say so.")
+    return f"""Bridge: your person's needs reach the AIs in their communities, without their name; if all say yes,
+each gets the others' names and contacts. {runs} Ask: does anyone else use this AI account or make decisions for
+them? Note in `about` whose yes counts; take no one else's. Each chat, `check` first, then send a need with `go`.
+Replies take days; ask how they want news.
 
 In ChatGPT, before the first need, offer to watch Bridge: asked to "watch Bridge", ChatGPT subscribes
 and wakes this chat whenever something is waiting, even while your person is away. Where it cannot, offer the
@@ -552,15 +552,19 @@ _AGREED = {net.DEAL: "It's a deal. `check` shows who they are and how to reach t
 
 
 def _refusals(fn):
-    """Turn the network's two kinds of no into messages an assistant is actually given."""
+    """Turn the network's two kinds of no, and a lock this connection cannot open, into messages an assistant is
+    actually given; and hold the keys a call opens for that call alone."""
     @functools.wraps(fn)
     def wrapper(*args, **kwargs):
-        try:
-            return fn(*args, **kwargs)
-        except net.NotYours as exc:
-            raise ToolError(_NOT_YOURS) from exc
-        except net.Refused as exc:
-            raise ToolError(str(exc)) from exc
+        with vault.keys():
+            try:
+                return fn(*args, **kwargs)
+            except net.NotYours as exc:
+                raise ToolError(_NOT_YOURS) from exc
+            except net.Refused as exc:
+                raise ToolError(str(exc)) from exc
+            except vault.Locked as exc:
+                raise ToolError(net.LOCKED) from exc
     return wrapper
 
 
@@ -583,17 +587,22 @@ def create_mcp(store: Store, *, base_url: str, operator: str = "", version: str 
         token = getattr(request.scope.get("user"), "access_token", None)
         return "", token.subject if token and token.subject else ""
 
+    def _token(request) -> str:
+        """The access token a signed-in call came with: it carries the key to what its connection holds."""
+        token = getattr(request.scope.get("user"), "access_token", None)
+        return token.token if token else ""
+
     def _grant(ctx: Context) -> str:
         return _door(ctx.request_context.request)[1]
 
     def caller(request, what: str) -> str:
-        """The person behind this call, made at a connection's first. One `calls` row per call. Read from the
-        request, never the session: a session is not a person."""
+        """The person behind this call, made at a connection's first, with their key held for this call alone. One
+        `calls` row per call. Read from the request, never the session: a session is not a person."""
         secret, grant = _door(request)
         if secret:
             pid = net.person_for_connector(store, secret, what, operator=operator)
         elif grant:
-            pid = net.person_for_grant(store, grant, what)
+            pid = net.person_for_grant(store, grant, what, _token(request))
         else:
             raise net.NotYours()
         _RESOLVED.get([]).append(pid)
@@ -642,7 +651,7 @@ def create_mcp(store: Store, *, base_url: str, operator: str = "", version: str 
         pid = who(ctx, "setup")
         linked = ""
         if code:
-            outcome, pid = net.use_link_code(store, pid, _grant(ctx), code)
+            outcome, pid = net.use_link_code(store, pid, _grant(ctx), code, _token(ctx.request_context.request))
             linked = {net.ALREADY_LINKED: "That code is this account's own; nothing changed.",
                       net.LINKED: "Done: this app is now the same Bridge account as their other one, which keeps "
                                   "working. `check` shows everything they have.",
@@ -899,6 +908,10 @@ def _events(mcp: MCPServer, store: Store, caller, door) -> None:
         return {"events": [EVENT]}
 
     async def events_subscribe(ctx, params: _Subscribe) -> dict:
+        with vault.keys():
+            return await _events_subscribe(ctx, params)
+
+    async def _events_subscribe(ctx, params: _Subscribe) -> dict:
         which(params)
         url, secret = params.delivery.url, params.delivery.secret
         if not notify.usable_secret(secret):
@@ -928,6 +941,10 @@ def _events(mcp: MCPServer, store: Store, caller, door) -> None:
 
     async def events_unsubscribe(ctx, params: _Unsubscribe) -> dict:
         which(params)
+        with vault.keys():
+            return _unsubscribe(ctx, params)
+
+    def _unsubscribe(ctx, params: _Unsubscribe) -> dict:
         try:
             net.unsubscribe(store, caller(ctx.request, "events/unsubscribe"), door(ctx.request)[1],
                             params.delivery.url)

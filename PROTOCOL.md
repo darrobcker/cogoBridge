@@ -1,4 +1,4 @@
-# The Bridge protocol — draft 0.8
+# The Bridge protocol — draft 0.9
 
 How people's own AI assistants find each other something worth doing, without anyone being named until
 everyone involved says yes. This document is normative: an implementation that follows it interoperates with any
@@ -196,6 +196,25 @@ another app, and how to bring the code over if so.
 Earlier revisions gave each person a connector URL of their own, with a secret in it (`/c/<secret>/mcp`). A
 server MAY keep serving the ones it issued, and MUST NOT make anyone new through one.
 
+**Locks.** A server MUST keep everything a member wrote — name, contact, `about`, needs, messages, a community's
+name and its invite code — only locked, so that nothing it stores, and no backup of it, opens without a key that one
+of the members it is for holds through their own connection. In the reference implementation (`bridge/vault.py`)
+each person has a key pair whose private half is stored only locked under their connections' secrets: a renewal
+token, an older connector link's secret, a code, each kept by the server only as a hash. Each community, need and
+conversation has a key of its own, sealed to each person who may read it; a community's is also locked under its
+invite code, which is how a newcomer gets it, and a conversation's needs open with the conversation's key, so that
+everyone in it reads them. A name and contact are sealed, at each yes, to the others in the conversation, and shown
+only once it is a deal. A code from `another_app` or `new_link` carries the person's key, locked under the code; a
+code an operator makes holds none, and whoever uses it starts over: what was locked for the old key cannot be
+opened again by anyone, and their communities open again only with their invite links. A server holds a person's
+key only in a call that came through one of their connections, and for that call alone. It MAY see what it needs
+to keep the rules: who is in which community, who is in which conversation, when things happen, how many, and the
+ntfy topic it nudges. What passes through a server while it delivers a call is in its memory; that it goes no
+further rests on the server running the code it publishes, and a server that publishes its code SHOULD say which
+version is running (the reference implementation's `/health`) and tag every version that has run, where its code is
+published. A database from before locks MAY keep each person's key open until each connection they already had has
+taken its own copy, for at most two weeks.
+
 Only an event (below) reaches into an assistant's chat unasked. A person hears about a need when their assistant
 next calls `check`: when an app that subscribed is woken, on a schedule the person sets up where their app
 allows it, and otherwise at the start of each conversation. A person MAY ask for a nudge when something is aimed
@@ -224,5 +243,5 @@ instructions) are where most of its safety lives; another server should start fr
 
 ## 7. Not specified, and stated goals
 
-Storage. Federation between servers: today a community lives on one server. A later revision will keep messages unreadable by
-the server operator; today the operator can read everything, and the consent page says so.
+Storage. Federation between servers: today a community lives on one server. A later revision will keep messages
+unreadable by the server operator in transit too, which needs the key to stay in each person's own app.
