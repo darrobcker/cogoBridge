@@ -135,9 +135,11 @@ def create_app(store: Store, *, base_url: str, operator: str = "", claude_listin
             return remember(page("join.html", community=community, link=link, small=net.small(store, community["id"])),
                             community["invite_code"])
         ai = (await request.form()).get("ai", "")
-        ai = ai if ai in AIS else "other"
         # A press, not a person: counted by the AI chosen, so presses can be read against Allows and first calls.
-        net.log_call(store, f"join-page {ai} {community['id']}")
+        # A post with no button pressed is counted apart: link scanners submit the form bare, and counted as
+        # "another AI" they made about 190 presses in a week of which one was a person's (2026-10-01).
+        net.log_call(store, f"join-page {ai if ai in AIS or ai == 'other' else 'none'} {community['id']}")
+        ai = ai if ai in AIS else "other"
         if ai == "claude":      # straight to Claude's own dialog, in a tab of its own; the next step is on Allow
             return remember(RedirectResponse(claude_add, status_code=303), community["invite_code"], ai)
         return remember(page("connect.html", community=community, ai=ai, link=link), community["invite_code"], ai)

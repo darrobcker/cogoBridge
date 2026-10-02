@@ -490,8 +490,12 @@ def test_the_invite_page_makes_nobody_and_records_the_press(store):
     assert "Join" in b.get(f"/join/{invite}").text and b.head(f"/join/{invite}").status_code == 200
     for _ in range(2):
         assert b.post(f"/join/{invite}", data={"ai": "chatgpt"}).status_code == 200
+    # A bare post, as link scanners send, is counted apart from a person choosing "Another AI".
+    assert b.post(f"/join/{invite}", data={}).status_code == 200
+    assert b.post(f"/join/{invite}", data={"ai": "other"}).status_code == 200
     assert net.stats(store)["people"] == 1                          # its owner
-    assert net.stats(store)["calls"] == {f"join-page chatgpt {community_id}": 2}
+    assert net.stats(store)["calls"] == {f"join-page chatgpt {community_id}": 2, f"join-page none {community_id}": 1,
+                                         f"join-page other {community_id}": 1}
 
 
 def test_a_page_reached_through_a_changed_link_remembers_the_code_as_stored(store, clock):
