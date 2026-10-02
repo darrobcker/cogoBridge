@@ -401,10 +401,18 @@ def render_check(inbox: dict, now: float) -> str:
     # a yes in advance can pile deals up, one answered conversation each (review).
     deals: list[tuple[str, str]] = []
     for c in sorted((c for c in inbox["conversations"] if c["deal"]), key=lambda c: c["deal"]):
-        them = (f"{said(c['them']['name'])} — {said(c['them']['contact'])}" if c["them"]
-                else "(they have since deleted their data)")
-        head = f"\nDEAL [{c['id']}] {_in(c['community'])} — both said yes.\n  them: {them}\n"
-        deals.append((f"{head}  about: {said(c['need'])}\n"
+        if "everyone" in c:
+            # Several people: each named to everyone else in it, under the number they had in it.
+            them = "".join(f"  {o['who']}: {said(o['name'])} — {said(o['contact'])}\n" if o
+                           else "  (one of them has since deleted their data)\n" for o in c["everyone"])
+            head = f"\nDEAL [{c['id']}] with {len(c['everyone']) + 1} people — everyone in it said yes.\n{them}"
+            about = "".join(f"  about {n['by']}'s need: {said(n['text'])}\n" for n in c["needs"])
+        else:
+            them = (f"{said(c['them']['name'])} — {said(c['them']['contact'])}" if c["them"]
+                    else "(they have since deleted their data)")
+            head = f"\nDEAL [{c['id']}] {_in(c['community'])} — both said yes.\n  them: {them}\n"
+            about = f"  about: {said(c['need'])}\n"
+        deals.append((f"{head}{about}"
                       + "".join(f"  {m['from']}, last before the deal: {said(m['text'])}\n" for m in c["messages"])
                       + "  Give your person this, and have them save it now: `check` shows it for "
                       f"{span(c['shown_until'])} more. It is theirs to take from here, directly: nothing more goes "
@@ -423,12 +431,25 @@ def render_check(inbox: dict, now: float) -> str:
     for c in sorted((c for c in inbox["conversations"] if not c["deal"]),
                     key=lambda c: (c["over"], not c["your_turn"], c["last_t"])):
         where = f"[{c['id']}] {_in(c['community'])} on {'your' if c['mine'] else 'their'} need: {said(c['need'])}"
+        if "people" in c:
+            # Several people, each by a number that is the same for everyone in it; the needs it was opened on, each
+            # with the community it came through where this person may see it.
+            starter = next(p["who"] for p in c["people"] if p["started"])
+            gone = [p["who"] for p in c["people"] if not p["in"]]
+            where = (f"[{c['id']}] with {len(c['people'])} people, started by {starter}, on these needs:\n"
+                     + "\n".join(f"    {n['by']}: {said(n['text'])}" + (f" ({_in(n['community'])})"
+                                                                         if n["community"] else "")
+                                  for n in c["needs"])
+                     + (f"\n  no longer in it: {', '.join(gone)} (how they went is never said)" if gone else "")
+                     + f"\n  To report one of them, or remove one as an owner, add their number: [{c['id']}:2].")
         if c["over"]:
             # "They moved on" was false for most of the ways a conversation ends (simulation), and which way it
             # ended is never said (rule 2). One line: nothing in it is left to act on but `pass`.
             state = ("your need has closed" if c.get("need_closed") else
                      "it can no longer become a deal: one side passed, the need closed, or someone left; which, is "
-                     "never said")
+                     "never said" if "people" not in c else
+                     "it can no longer become a deal: fewer than two are still in it, or a week went by with nobody "
+                     "answering; which, is never said")
             items.append(("conversation", f"\nOVER {where} — {state}. `pass` to clear it."))
             continue
         if c["you_said_yes"]:
@@ -437,7 +458,8 @@ def render_check(inbox: dict, now: float) -> str:
             # And a message on its own now takes the yes back, so the words go with agree=true (design review).
             state = ("you said yes, but they are never shown that and the last message is theirs — tell them "
                      "where things stand with `reply` and agree=true: a message alone takes your yes back"
-                     if c["your_turn"] else "you said yes; waiting on them")
+                     if c["your_turn"] else "you said yes; waiting on them" if "people" not in c else
+                     "you said yes; it is a deal when everyone still in it has")
         else:
             state = "YOUR TURN" if c["your_turn"] else "waiting on them"
         # The number a yes names: an app with instructions from before it learns of it here and in the refusal.
@@ -688,10 +710,11 @@ def create_mcp(store: Store, *, base_url: str, operator: str = "", version: str 
     @tool("Reply for me", open_world=True)
     @_refusals
     def reply(to: str, text: str, agree: bool = False, revision: int | None = None, ctx: Context = None) -> str:
-        """Writes to the other side. `to` is a need id (n-…), which opens a conversation, or a conversation
-        id (c-…). `agree=true` also records the person's yes; in a conversation already open it needs
-        `revision`, the conversation's revision the person saw. Any message clears both sides' yeses; a yes
-        that meets the other side's makes the deal at once, and its message is not sent."""
+        """Writes to the other side. `to` is a need id (n-…), which opens a conversation with its author; several
+        need ids, separated by commas, which open one conversation with all their authors; or a conversation id
+        (c-…). `agree=true` also records the person's yes; in a conversation already open it needs `revision`,
+        the conversation's revision the person saw. Any message clears every yes; a yes that completes everyone
+        else's makes the deal at once, and its message is not sent."""
         conversation_id, outcome = net.reply(store, who(ctx, "reply"), to, text, agree_too=agree, revision=revision)
         if outcome == net.MET:
             return (f"They had already said yes to [{conversation_id}] as your person saw it, so your person's yes "
@@ -707,9 +730,9 @@ def create_mcp(store: Store, *, base_url: str, operator: str = "", version: str 
     def agree(conversation_id: str, revision: int | None = None, one_more: bool = False, withdraw: bool = False,
               ctx: Context = None) -> str:
         """Records the person's yes to a conversation at `revision`, the revision they saw; refused if the
-        other side has written since. When both sides have said yes, each gets the other's name and contact, and
-        the conversation ends. `one_more=true`: on the person's own full need, lets this yes make one more deal.
-        `withdraw=true`: takes the yes back, if it is not a deal yet; the other side is not told either way."""
+        other side has written since. When everyone still in it has said yes, each gets the others' names and
+        contacts, and the conversation ends. `one_more=true`: on the person's own full need, lets this yes make
+        one more deal. `withdraw=true`: takes the yes back, if it is not a deal yet; nobody is told either way."""
         if withdraw:
             outcome = net.withdraw(store, who(ctx, "agree"), conversation_id)
             return ("Their yes is taken back. If you told the other side yes in words, tell them it is not "
@@ -720,8 +743,9 @@ def create_mcp(store: Store, *, base_url: str, operator: str = "", version: str 
     @tool("Pass for me", name="pass", destructive=True)
     @_refusals
     def pass_(ref: str, ctx: Context = None) -> str:
-        """Hides needs (n-…) that reached the person, closes their own, or leaves conversations (c-…). One id,
-        or several separated by spaces or commas. The other side is never told who passed."""
+        """Hides needs (n-…) that reached the person, closes their own, or leaves conversations (c-…; in one of
+        several people, the others carry on). One id, or several separated by spaces or commas. Nobody is told
+        who passed."""
         pid, results = who(ctx, "pass"), []
         for one in [r for r in re.split(r"[\s,]+", ref) if r.strip("[]")]:
             try:
@@ -746,16 +770,16 @@ def create_mcp(store: Store, *, base_url: str, operator: str = "", version: str 
         - invite (community_id): the link to pass on. Any member may ask.
         - leave (community_id): their needs stop showing there and its needs stop reaching them; rejoining
           brings their open needs back. Conversations under way carry on.
-        - report (ref): reports a need (n-…) or the other side of a conversation (c-…) before any deal to the
-          owner of the community it came through, who sees what that side wrote and never who reported it. Not
-          in a community the person owns.
+        - report (ref): reports a need (n-…) or the other side of a conversation (c-…; of several people, add
+          their number: c-…:2) before any deal to the owner of the community it came through, who sees what that
+          side wrote and never who reported it. Not in a community the person owns.
         Owner only, while a member:
         - rename (community_id, name)
         - new_link (community_id): replaces the invite link; every copy already shared stops working.
-        - remove (community_id, ref): puts out the person behind a need (n-…), a conversation (c-…) or a report
-          (r-…), never through a deal. That account cannot rejoin with the link, their needs stop showing there,
-          and their conversations through it end. Nobody is told. Anyone holding the link can still join as
-          someone new, until new_link replaces it.
+        - remove (community_id, ref): puts out the person behind a need (n-…), a conversation (c-…, or c-…:2
+          for one of several) or a report (r-…), never through a deal. That account cannot rejoin with the link,
+          their needs stop showing there, and their conversations through it end. Nobody is told. Anyone holding
+          the link can still join as someone new, until new_link replaces it.
         - dismiss (ref): clears a report (r-…) without acting on it. Nobody is told."""
         pid = who(ctx, f"community.{action}")
         if action == "create":

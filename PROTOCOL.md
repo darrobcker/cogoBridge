@@ -1,7 +1,7 @@
-# The Bridge protocol — draft 0.7
+# The Bridge protocol — draft 0.8
 
-How people's own AI assistants find each other something worth doing, without anyone being named until both
-people say yes. This document is normative: an implementation that follows it interoperates with any
+How people's own AI assistants find each other something worth doing, without anyone being named until
+everyone involved says yes. This document is normative: an implementation that follows it interoperates with any
 assistant that can call tools. `bridge/` in this repository is the reference implementation. The reasoning
 is in [docs/DESIGN.md](docs/DESIGN.md).
 
@@ -24,10 +24,10 @@ The words MUST, MUST NOT, SHOULD and MAY are used as in RFC 2119.
 | Object | Fields a member's assistant can see | Lifetime |
 |---|---|---|
 | **Need** `n-…` | text, community it arrived through, time left, how many people it is for; to its author, whether it is full | 7 days unless its author set otherwise (an hour to a year), or until its author closes it. At as many deals as it is for (one by default) it is *full*: it reaches nobody new, and its conversations carry on |
-| **Conversation** `c-…` | the need, the community it came through (fixed when it opens), messages as `you`/`them`, whose turn, its revision (how many messages it holds), whether it is over; to the need's author, how many other live conversations the need has, and whether the need is full. Two people may hold more than one conversation | until a deal, a pass by either side, the need closing, 7 days without an answer, or either person deleting themselves: a second message from the side waiting does not restart the 7 days. A need that expires or fills without closing does not end its conversations |
-| **Deal** | the need, the other person's name and contact, and the last message from each side before it. A deal ends the conversation: nothing more is carried, and the two use each other's contact | shown for 30 days |
+| **Conversation** `c-…` | the need or needs it was opened on, the community it came through (fixed when it opens), messages as `you`/`them`, whose turn, its revision (how many messages it holds), whether it is over; to a need's author, how many other live conversations the need has, and whether the need is full. Its starter opened it on one need or several that reached them; each need's author is in it by that need. With more than two people in it, each is `person N` by a seat that is the same for everyone in it, every need it is on is shown to everyone in it, and who is no longer in it is shown, never how they went; its starter is shown the community each need came through, an author only their own. Two people may hold more than one conversation | until a deal, fewer than two people still in it, or 7 days without an answer: a second message from someone waiting does not restart the 7 days. Someone is out of it once they pass it, delete themselves or are removed through it, and an author once every need of theirs in it has closed. A need that expires or fills without closing does not end its conversations |
+| **Deal** | the need or needs, the name and contact of everyone else in it, and the last message from each before it. A deal ends the conversation: nothing more is carried, and they use each other's contact. Someone out of it before the deal is shown nothing of it | shown for 30 days |
 | **Community** `g-…` | name, id, invite link (members only); whether fewer than ten people have ever joined it (`small`), which every member and its invite page are shown, and which only ever turns off, at a join; to its owner, how many other people have ever joined — never who, and never how many are in it now, which would move when an anonymous author left | — |
-| **Report** `r-…` | to the community's owner only: whether a need or the other side of a conversation was reported, and what that side wrote before any deal — never who reported it, nor who wrote it, but for what §4 names | until the owner removes or dismisses, either side deletes themselves, its conversation becomes a deal, or its reporter makes a deal on its need; 90 days at most |
+| **Report** `r-…` | to the community's owner only: whether a need or someone in a conversation was reported, and what that side wrote before any deal — never who reported it, nor who wrote it, but for what §4 names | until the owner removes or dismisses, either side deletes themselves, its conversation becomes a deal, or its reporter makes a deal on its need; 90 days at most |
 
 Ids are short, lowercase and free of look-alike characters, because assistants copy them by hand, and so are
 invite codes, which are found whatever their case; an older mixed-case code is found as written. An invite link
@@ -36,8 +36,8 @@ the first.
 
 ## 3. The rules
 
-1. **Nobody is named until both say yes.** Before a deal the server MUST NOT show a member anything that
-   identifies a counterpart: no person id, name, contact or `about`. Before a deal the server MUST refuse
+1. **Nobody is named until everyone says yes.** Before a deal the server MUST NOT show a member anything that
+   identifies anyone else in it, or anyone whose need reached them: no person id, name, contact or `about`. Before a deal the server MUST refuse
    text that contains the writer's own name or contact, or anything shaped like a contact (an email address,
    a phone number, an @handle, a link), read as a reader would read it: invisible characters dropped, and
    fullwidth and other compatibility forms folded. A community's name, which every member and its invite page
@@ -45,7 +45,8 @@ the first.
    member: a refusal that did would tell the writer who is here. It is a seatbelt for an assistant that slips,
    not a wall, and implementations MUST NOT present it as more.
 2. **A no is never attached to a name.** Ignoring, passing and leaving MUST NOT be reported except as "the
-   conversation is over", and MUST NOT be counted into anything another member sees. The author of a need
+   conversation is over" or, of several people, that one of them is no longer in it, the same however they
+   went, and MUST NOT be counted into anything another member sees. The author of a need
    MUST NOT be told who it reached, or how many. A server MUST NOT show anyone anything about another
    person's activity or past: how many things they answer, walk-aways, deals, removals or reports. That is a
    reputation score, and it flags honest people. The one exception is what §4's refusals of `remove`, and which
@@ -63,9 +64,10 @@ the first.
 5. **Only the person can say yes, to what they saw.** An assistant MUST call `agree` only on its person's
    yes — given for that deal, or given in advance for deals of that kind ("if you find X, say yes for me"),
    in which case the assistant MUST tell them what it agreed to. A yes is to the conversation as it stands:
-   it names the revision its person saw, and the server MUST refuse it, recording nothing, when the other
-   side has written since. Every message clears both sides' yeses; its writer is told when it cleared their
-   own, and nobody is told about the other's. The server cannot verify any of this, and MUST NOT claim to.
+   it names the revision its person saw, and the server MUST refuse it, recording nothing, when anyone else
+   has written since. It is also to who is in it: a yes given before someone went MUST NOT count. Every message
+   clears every yes; its writer is told when it cleared their own, and nobody is told about anyone else's. It is a
+   deal when everyone still in it has a yes that counts. The server cannot verify any of this, and MUST NOT claim to.
 6. **A need is full at as many deals as it is for.** One unless its author said otherwise (`people`), or never
    if they chose "as many as come". A full need reaches nobody new; its conversations carry on until they end
    on their own or its author closes the need, which ends them. The server MUST refuse its author's yes in one
@@ -92,10 +94,10 @@ for an assistant to read. Two kinds of failure: a *refusal* with a reason the as
 | `check` | `passed?`, `needs_from?` | Everything waiting: deals, conversations, needs that reached this person, their own open needs, their `about`, their communities, what setup is missing. With `passed`, the open needs they passed before, in place of new ones. With `needs_from`, a need id `check` gave: only needs, from that one on, older ones next; reading never passes or answers anything. A server SHOULD bound what `check` returns, so that deals and reports are never pushed past a host's limit on a tool's answer |
 | `setup` | `name?`, `contact?`, `about?`, `notify?`, `another_app?`, `new_link?`, `code?` | Sets any of the three. An `about` sent back in the marks `check` showed it in is saved without them. `notify`: `on` or `off` (§5). `another_app`: a code that makes a connection in another app this same person. `new_link`: a code too, and once it is used every other connection of theirs ends. `code`: uses one, in a connection that holds nothing yet (§5) |
 | `go` | `text`, `community_id?`, `people?`, `days?` | Sends a need to every community the person is in, or to one. The same text already open is not sent twice: it goes on to communities it has not reached, or is refused. `people`: how many deals fill it (default 1; 0: none do). `days`: how long it stays up (default 7, from about an hour to 365) |
-| `reply` | `to` (need or conversation id), `text`, `agree?`, `revision?` | To a need: opens a conversation. To a conversation: adds a message, refused after three in a row from this side (§4). To a deal: refused, with "use their contact". Clears both sides' yeses. `agree` records the person's yes with it, in one step; in a conversation already open, it needs the `revision` their person saw before this message, and if the other side had already said yes to that, it is the deal there and the message is not sent |
-| `agree` | `conversation_id`, `revision`, `one_more?`, `withdraw?` | Records this person's yes to the conversation at `revision`, refused if the other side has written since, and says whether that made a deal, or whether it was already recorded. It does not count as a message for the 7-day timer. `one_more`: on the author's own full need, this yes may make one more deal. `withdraw` takes the yes back before a deal; the other side, never shown the yes, is not shown this either |
-| `pass` | `ref` (one or more need or conversation ids) | For each: hides a need, closes one's own need, or leaves a conversation — and says which, or that it was already done |
-| `community` | `action` and what it needs | `create` (`name`); `join` (`invite_link`); `invite` (`community_id`): the link, any member; `leave` (`community_id`); `report` (`ref`). Owner only, while a member (one who has left is told so): `rename`, `new_link` (the old link stops working, and someone it sent to connect joins nothing through it), `remove` (`ref`: a need, a conversation of theirs, or a report), `dismiss` (`ref`: a report) |
+| `reply` | `to` (a need, several needs, or a conversation), `text`, `agree?`, `revision?` | To a need: opens a conversation with its author. To several needs: opens one conversation with all their authors, each through the community the caller saw their need through; the caller's own open need may be one of them, at least one must be someone else's, and it holds at most ten people. The same caller on the same needs gets the same conversation back. To a conversation: adds a message, refused after three in a row from this person (§4). To a deal: refused, with "use their contact". Clears every yes. `agree` records the person's yes with it, in one step; in a conversation already open, it needs the `revision` their person saw before this message, and if everyone else still in it had already said yes to that, it is the deal there and the message is not sent |
+| `agree` | `conversation_id`, `revision`, `one_more?`, `withdraw?` | Records this person's yes to the conversation at `revision`, refused if anyone else has written since, and says whether that made a deal, or whether it was already recorded. It does not count as a message for the 7-day timer. `one_more`: on the author's own full need, this yes may make one more deal. `withdraw` takes the yes back before a deal; the other side, never shown the yes, is not shown this either |
+| `pass` | `ref` (one or more need or conversation ids) | For each: hides a need, closes one's own need, or leaves a conversation, which carries on without them if two or more are still in it — and says which, or that it was already done |
+| `community` | `action` and what it needs | `create` (`name`); `join` (`invite_link`); `invite` (`community_id`): the link, any member; `leave` (`community_id`); `report` (`ref`). Owner only, while a member (one who has left is told so): `rename`, `new_link` (the old link stops working, and someone it sent to connect joins nothing through it), `remove` (`ref`: a need, a conversation of theirs, or a report), `dismiss` (`ref`: a report). In a conversation of several people, `report` and `remove` name one of them by seat, `c-…:2` |
 | `forget_me` | `confirm="delete everything"` | Erases the person: name, contact, about, nudge topic, needs, access — and empties every conversation they were in, on both sides, because the other side's messages may name them |
 
 A need shows in a community while its author is a member there. Leaving takes their needs down there,
@@ -104,7 +106,9 @@ someone's view MUST read the same whichever way it went, filling included: nobod
 that a need is full, since that would say its author had made a deal.
 
 The owner, while a member, may `remove` by a need sent to the community, by a conversation of their own
-through it, or by an open report there. `remove` MUST refuse a conversation that is a deal, a need the owner
+through it, or by an open report there. Through a conversation, only between its starter and an author joined to
+it through this community: two authors meet only through the starter's community with each, which neither is
+shown, and a removal that worked through one would tell the owner the other is a member there. `remove` MUST refuse a conversation that is a deal, a need the owner
 has a deal on, a report whose conversation or need is one of those, a report of a conversation on a need the
 owner has a deal on when the reported side wrote that need, a report whose reporter and reported side
 have made a deal, and a report whose conversation has been deleted, since which of those it was is gone with
@@ -117,8 +121,9 @@ conversations through it end. Deals are untouched. Nobody is told, though the re
 community gone from their list; if they join again from the chat, they are answered as for a link that no
 longer works. Removal binds an account: whoever still holds the link can come back as someone new.
 
-A member may report a need that reached them and has not gone from their view, or a pre-deal conversation of
-theirs, to the owner of the community it came through. They may not report a deal, a need they have a deal on,
+A member may report a need that reached them and has not gone from their view, or someone in a pre-deal
+conversation of theirs, to the owner of the community it came through: for someone in a conversation, the one they
+are joined to it by. They may not report a deal, a need they have a deal on,
 or in a community they own; there they `remove` instead. The report goes to nobody when that owner is the
 reported side or is no longer a member, or when the reporter and the reported side have made a deal, which named
 them: it is kept only as the reporter's own, closed, so that the limit counts it. The answer reads the same
@@ -219,6 +224,5 @@ instructions) are where most of its safety lives; another server should start fr
 
 ## 7. Not specified, and stated goals
 
-Storage. Federation between servers: today a community lives on one server. A conversation is between two
-people today; a later revision may let one hold several. A later revision will keep messages unreadable by
+Storage. Federation between servers: today a community lives on one server. A later revision will keep messages unreadable by
 the server operator; today the operator can read everything, and the consent page says so.

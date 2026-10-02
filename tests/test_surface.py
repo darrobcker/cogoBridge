@@ -200,6 +200,28 @@ def test_two_friends_make_a_deal_entirely_in_chat(live):
     assert "+44 7700 900123" in call(ola, "check") and "Ola Mensah" in call(rae, "check")
 
 
+def test_three_people_pieced_together_make_one_deal_in_chat(live):
+    """An assistant that sees two needs that fit together opens one conversation with both authors, in the chat,
+    with the ids `check` gave it; everyone in it is numbered, and once all three say yes each has the other two."""
+    ola, rae, sam = live(), live(), live()
+    for who, name, contact in ((ola, "Ola Mensah", "ola@example.com"), (rae, "Rae Iwuchukwu", "+44 7700 900123"),
+                               (sam, "Sam Lee", "sam@example.com")):
+        call(who, "setup", name=name, contact=contact, about="climbing")
+    climb = re.search(r"\[(n-[^\]]+)\]", call(ola, "go", text="A climbing partner at the sea cliffs")).group(1)
+    lift = re.search(r"\[(n-[^\]]+)\]", call(rae, "go", text="A lift to the coast on Saturday")).group(1)
+    sent = call(sam, "reply", to=f"{climb}, {lift}", text="I drive there Saturdays and climb: one trip for all?")
+    conversation = re.search(r"\[(c-[^\]]+)\]", sent).group(1)
+    seen = call(ola, "check")
+    assert "with 3 people, started by person 1" in seen and "person 1: <<<I drive there" in seen, seen
+    assert "Sam" not in seen and "Rae" not in seen
+    for who in (ola, rae, sam):
+        at = int(re.search(rf"\[{conversation}\].*?revision (\d+)", call(who, "check"), re.S).group(1))
+        last = call(who, "agree", conversation_id=conversation, revision=at)
+    assert "deal" in last.lower()
+    shown = call(ola, "check")
+    assert "Sam Lee" in shown and "+44 7700 900123" in shown and "everyone in it said yes" in shown
+
+
 def test_an_app_holding_an_old_tool_list_still_works_and_is_told_to_refresh(live, store):
     """ChatGPT keeps the tool list it saw when its person added the app. A real user's assistant called
     create_community, folded into `community` in 1ac5c70, got "Unknown tool", and told its person the backend was

@@ -2370,6 +2370,8 @@ def _writer_calls(w) -> dict:
     net.setup(s, ola, notify="on")
     secret = own_link(s, ola)
     need, other = w.go("ola", "a climbing partner"), w.go("ola", "a sourdough starter")
+    w.add("sam", "Sam Lee", "sam@example.com")
+    third = w.go("sam", "a lift to the crag")
     conversation = w.reply("rae", need, "keen")
     agree(s, ola, conversation)
     net.report(s, rae, conversation)
@@ -2407,6 +2409,7 @@ def _writer_calls(w) -> dict:
         "go": (rae, lambda: net.go(s, rae, "a lift to the wall")),
         "_already_out": (ola, lambda: net.go(s, ola, "a sourdough starter", elsewhere)),
         "reply": (rae, lambda: net.reply(s, rae, other, "I have one")),
+        "_open": (rae, lambda: net.reply(s, rae, f"{other} {third}", "one trip for both of you?")),
         "_agree": (rae, lambda: agree(s, rae, conversation)),
         "report": (rae, lambda: net.report(s, rae, other)),
         "dismiss": (owner, lambda: net.dismiss(s, owner, report, community)),
@@ -2755,7 +2758,7 @@ def test_a_conversation_from_before_its_community_was_recorded_names_no_empty_on
     'in <<<>>>' (Fable review)."""
     ola, rae = world.pair()
     conversation = world.reply("rae", world.go("ola", "a climbing partner"), "keen")
-    store.exec("UPDATE conversations SET via='' WHERE id=?", conversation)
+    store.exec("UPDATE conversation_needs SET via='' WHERE conversation_id=?", conversation)
     for pid in (ola, rae):
         text = _check(store, pid)
         assert conversation in text and "<<<>>>" not in text
@@ -2925,3 +2928,197 @@ def test_a_database_from_another_version_is_refused(tmp_path):
     fresh = tmp_path / "new.db"
     net.open_store(fresh).db.close()
     net.open_store(fresh)
+
+
+def test_a_two_person_database_moves_to_conversations_of_any_size(tmp_path):
+    """Schema 7 held a conversation as its author and responder, each with a yes and a pass; schema 8 holds its
+    people by seat. A live database must come over whole: the responder starts it in seat 1, the author is in seat 2
+    by their need, a yes given then stands, and a deal names both to each other."""
+    import sqlite3
+    path = tmp_path / "seven.db"
+    s = net.open_store(path)
+    s.set_clock(Clock())
+    w = World(s)
+    ola, rae = w.pair()
+    sam = w.add("sam", "Sam Lee", "sam@example.com")
+    dealt = w.deal("ola", "rae")
+    waiting = w.reply("sam", w.go("ola", "a sourdough starter"), "I have one")
+    agree(s, sam, waiting)
+    rows = [dict(r) for r in s.all("SELECT c.id, c.starter_id, c.created_t, c.last_t, c.deal_t, cn.need_id, "
+                                   "cn.author_id, cn.via FROM conversations c JOIN conversation_needs cn ON "
+                                   "cn.conversation_id=c.id")]
+    people = {(r["conversation_id"], r["person_id"]): dict(r) for r in s.all("SELECT * FROM conversation_people")}
+    s.db.close()
+    db = sqlite3.connect(path)          # back to schema 7, as the live database is
+    db.executescript("DROP TABLE conversation_needs; DROP TABLE conversation_people; DROP TABLE conversations; "
+                     "ALTER TABLE reports DROP COLUMN seat; CREATE TABLE conversations (id TEXT PRIMARY KEY, need_id "
+                     "TEXT NOT NULL, author_id TEXT NOT NULL, responder_id TEXT NOT NULL, via TEXT NOT NULL DEFAULT "
+                     "'', created_t REAL NOT NULL, last_t REAL NOT NULL, author_yes_t REAL, responder_yes_t REAL, "
+                     "deal_t REAL, author_passed_t REAL, responder_passed_t REAL, UNIQUE (need_id, responder_id));")
+    for r in rows:
+        author, responder = people[(r["id"], r["author_id"])], people[(r["id"], r["starter_id"])]
+        db.execute("INSERT INTO conversations VALUES (?,?,?,?,?,?,?,?,?,?,?,?)", (
+            r["id"], r["need_id"], r["author_id"], r["starter_id"], r["via"], r["created_t"], r["last_t"],
+            author["yes_t"], responder["yes_t"], r["deal_t"], author["passed_t"], responder["passed_t"]))
+    db.execute("PRAGMA user_version=7")
+    db.commit()
+    db.close()
+    s = net.open_store(path)
+    s.set_clock(w.store._clock)
+    w.store = s
+    assert s.one("PRAGMA user_version")[0] == 8
+    assert {c["id"]: c.get("them") for c in w.inbox("ola")["conversations"]}[dealt] == {
+        "name": "Rae Iwuchukwu", "contact": "+44 7700 900123"}
+    assert {c["id"]: c["you_said_yes"] for c in w.inbox("sam")["conversations"]} == {waiting: True}
+    assert agree(s, ola, waiting) == net.DEAL                          # the yes from before still meets one
+    assert net._dealt(s, ola, rae) and net._dealt(s, ola, sam) and not net._dealt(s, rae, sam)
+    assert {c["id"] for c in w.inbox("rae")["conversations"]} == {dealt}
+
+
+# -- conversations of several people ----------------------------------------------------------------------------
+
+def _three(world):
+    """Two needs from two people, and a third person whose assistant sees they fit together."""
+    ola, rae = world.pair()
+    sam = world.add("sam", "Sam Lee", "sam@example.com", "drives to the coast most weekends")
+    climb, lift = world.go("ola", "a climbing partner at the sea cliffs"), world.go("rae", "a lift to the coast")
+    conversation = world.reply("sam", f"{climb}, {lift}", "I drive there Saturdays and climb: one trip for all of us?")
+    return ola, rae, sam, climb, lift, conversation
+
+
+def test_several_needs_open_one_conversation_with_all_their_authors(world, store):
+    """An assistant that sees two needs it can piece together opens one conversation with both authors; each is
+    numbered the same for everyone in it, and each author sees every need it is on. Nobody's community but their
+    own link's is shown to an author: the others would tell them which communities the starter is in."""
+    climbers, _ = net.create_community(store, net.new_person(store), "Climbers")
+    ola, rae, sam, climb, lift, conversation = _three(world)
+    for key in ("ola", "rae", "sam"):
+        c = next(c for c in world.inbox(key)["conversations"] if c["id"] == conversation)
+        assert [p["who"] for p in c["people"]] == {"sam": ["you", "person 2", "person 3"],
+                                                    "ola": ["person 1", "you", "person 3"],
+                                                    "rae": ["person 1", "person 2", "you"]}[key]
+        assert [n["text"] for n in c["needs"]] == ["a climbing partner at the sea cliffs", "a lift to the coast"]
+        assert [bool(n["community"]) for n in c["needs"]] == {"sam": [True, True], "ola": [True, False],
+                                                              "rae": [False, True]}[key]
+    assert world.inbox("ola")["conversations"][0]["messages"][-1]["from"] == "person 1"
+    assert world.inbox("sam")["reached"] == []                        # both became the conversation
+    assert world.reply("sam", f"{lift} {climb}", "same again") == conversation   # the same needs: the same one
+    assert len(climbers) and store.one("SELECT COUNT(*) n FROM conversations")["n"] == 1
+
+
+def test_a_group_deal_needs_everyone_still_in_it_and_names_everyone_to_everyone(world, store):
+    """Nobody is named until everyone in it has said yes; then each has everyone else's name and contact. Before
+    that, nothing anyone is shown identifies anyone else (rule 1)."""
+    ola, rae, sam, climb, lift, conversation = _three(world)
+    world.reply("ola", conversation, "Saturday works")
+    world.reply("rae", conversation, "Me too")
+    assert agree(store, sam, conversation) == net.YES
+    assert agree(store, ola, conversation) == net.YES
+    for reader, secrets in {"ola": ("Rae", "Iwuchukwu", "7700", "Sam Lee", "sam@example.com", rae, sam),
+                            "rae": ("Ola", "Mensah", "ola@example.com", "Sam Lee", ola, sam),
+                            "sam": ("Ola", "Mensah", "Rae", "Iwuchukwu", ola, rae)}.items():
+        for secret in secrets:
+            assert secret not in shown(world, reader), (reader, secret)
+    assert agree(store, rae, conversation) == net.DEAL
+    deal = world.inbox("ola")["conversations"][0]
+    assert deal["everyone"] == [{"who": "person 1", "name": "Sam Lee", "contact": "sam@example.com"},
+                                {"who": "person 3", "name": "Rae Iwuchukwu", "contact": "+44 7700 900123"}]
+    assert "Ola Mensah" in shown(world, "sam") and "Ola Mensah" in shown(world, "rae")
+    assert store.one("SELECT deals FROM needs WHERE id=?", climb)["deals"] == 1
+    assert store.one("SELECT deals FROM needs WHERE id=?", lift)["deals"] == 1
+    assert "everyone in it said yes" in mcp_server.render_check(world.inbox("rae"), store.now())
+
+
+def test_someone_going_takes_back_every_yes_given_while_they_were_in_it(world, store):
+    """A yes is to the conversation as it stands, and who is in it is part of that: two yeses given for a trip of
+    three are not a deal for two. The one who went is shown nothing of a deal made after, and the others are told
+    only that they are no longer in it, never how (rule 2)."""
+    ola, rae, sam, climb, lift, conversation = _three(world)
+    world.reply("ola", conversation, "Saturday works")
+    agree(store, sam, conversation)
+    agree(store, ola, conversation)
+    assert net.pass_on(store, rae, conversation) == "left that conversation (still in the community)"
+    c = world.inbox("sam")["conversations"][0]
+    assert not c["you_said_yes"] and not c["over"] and [p["in"] for p in c["people"]] == [True, True, False]
+    assert "no longer in it: person 3 (how they went is never said)" in mcp_server.render_check(
+        world.inbox("sam"), store.now())
+    assert agree(store, sam, conversation) == net.YES
+    assert agree(store, ola, conversation) == net.DEAL
+    assert world.inbox("ola")["conversations"][0]["everyone"] == [
+        {"who": "person 1", "name": "Sam Lee", "contact": "sam@example.com"}]
+    assert world.inbox("rae")["conversations"] == []
+    assert "Rae" not in shown(world, "sam") and "Sam Lee" not in shown(world, "rae")
+    assert store.one("SELECT deals FROM needs WHERE id=?", lift)["deals"] == 0
+    for act in (lambda: net.reply(store, rae, conversation, "wait, me too"), lambda: agree(store, rae, conversation),
+                lambda: net.withdraw(store, rae, conversation)):
+        with pytest.raises(net.Refused, match="no longer in that conversation; the others carry on"):
+            act()
+    assert net.report(store, rae, f"{conversation}:1") == net.REPORTED and net._reported(store, world.community) == []
+
+
+def test_a_closed_need_takes_its_author_out_and_the_rest_carry_on(world, store):
+    """An author is in a conversation by their need: closing it is going, as in a conversation of two, where it
+    ends it; here the two left can still make their deal."""
+    ola, rae, sam, climb, lift, conversation = _three(world)
+    net.pass_on(store, rae, lift)                                     # rae closes their own need
+    assert [p["in"] for p in world.inbox("sam")["conversations"][0]["people"]] == [True, True, False]
+    world.reply("ola", conversation, "Just us then: Saturday")
+    agree(store, sam, conversation)
+    assert agree(store, ola, conversation) == net.DEAL
+
+
+def test_what_a_conversation_of_several_may_be_opened_on(world, store, clock):
+    """Several needs open one only when every one is a need still in front of the starter, at least one someone
+    else's, and with at most MAX_IN people in it. The starter's own open need may be one of them."""
+    ola, rae, sam, climb, lift, conversation = _three(world)
+    own, own_too = world.go("sam", "a belayer who can drive"), world.go("sam", "a second rope for the weekend")
+    with pytest.raises(net.Refused, match="all your person's own"):
+        net.reply(store, sam, f"{own}, {own_too}", "x")
+    mixed = world.reply("sam", f"{climb} {own}", "my own need fits yours")
+    assert [p["person_id"] for p in net._people(store, mixed)] == [sam, ola]
+    with pytest.raises(net.Refused, match="every one is a need"):
+        net.reply(store, sam, f"{climb} {conversation}", "x")
+    net.pass_on(store, ola, climb)
+    with pytest.raises(net.Refused, match="no longer open"):
+        net.reply(store, rae, f"{climb} {own}", "x")
+    many = []
+    for i in range(net.MAX_IN):
+        world.add(f"p{i}", f"Person {i}", f"p{i}@example.com")
+        many.append(world.go(f"p{i}", f"a hand with stage {i}"))
+    with pytest.raises(net.Refused, match=f"at most {net.MAX_IN} people"):
+        net.reply(store, sam, " ".join(many), "all of you?")
+    assert net.reply(store, sam, " ".join(many[:net.MAX_IN - 1]), "nine of you?")[1] is None
+
+
+def test_reports_and_removals_in_a_conversation_of_several_name_one_of_them(world, store):
+    """Of several people, a report or a removal must say which one, by the number everyone sees. A report goes to the
+    owner of the community that person is joined to it by. An owner removes only along a link they were shown — the
+    starter's with an author — since one that worked between two authors would tell the owner the other was a member
+    of a community they never saw it come through (review, critical)."""
+    owner = world.owner
+    ola, rae, sam, climb, lift, conversation = _three(world)
+    with pytest.raises(net.Refused, match=rf"\[{conversation}:"):
+        net.report(store, ola, conversation)
+    assert net.report(store, ola, f"{conversation}:3") == net.REPORTED
+    r = store.one("SELECT * FROM reports")
+    assert r["reported_id"] == rae and r["community_id"] == world.community and r["seat"] == 3
+    assert net.report(store, ola, f"{conversation}:1") == net.REPORTED    # another of them: a report of its own
+    assert store.one("SELECT COUNT(*) n FROM reports")["n"] == 2
+    # The owner as an author in it: removing the other author through it is refused as unknown.
+    net.join(store, owner, world.community)
+    net.setup(store, owner, name="Owen Owner", contact="owen@example.com")
+    own_need = net.go(store, owner, "someone for the cliff path cleanup")
+    group = world.reply("sam", f"{own_need} {lift}", "both on Saturday?")
+    with pytest.raises(net.NotYours):
+        net.remove(store, owner, f"{group}:3", world.community)
+    net.remove(store, owner, f"{group}:1", world.community)            # the starter, through the owner's own link
+    assert net.is_member(store, sam, world.community) is False
+
+
+def test_a_group_conversation_s_labels_never_change_with_who_wrote_which_need(world, store):
+    """Numbers are seats, given in the order the needs were named: swapping which person wrote which need moves no
+    one's label but along with the need (the author-swap test, for several)."""
+    ola, rae, sam, climb, lift, conversation = _three(world)
+    c = world.inbox("sam")["conversations"][0]
+    assert [(n["by"], n["text"]) for n in c["needs"]] == [("person 2", "a climbing partner at the sea cliffs"),
+                                                         ("person 3", "a lift to the coast")]

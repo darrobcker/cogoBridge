@@ -14,7 +14,7 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 # Sign-in (OAuth, PROTOCOL.md §5).
 SIGN_IN = """
@@ -44,8 +44,40 @@ CREATE TABLE daily (k TEXT NOT NULL, day INTEGER NOT NULL, n INTEGER NOT NULL, P
 """
 
 # From each older version to the next, applied in order when a database is opened: `{version: script}`, each script
-# ending with the next version's `PRAGMA user_version`. Empty: this repository starts at version 7.
-MIGRATIONS: dict[int, str] = {}
+# ending with the next version's `PRAGMA user_version`. This repository starts at version 7.
+MIGRATIONS: dict[int, str] = {
+    # 7 → 8: a conversation holds any number of people, each by the need that brought them in or as its starter.
+    # A two-person conversation becomes its responder, the starter, in seat 1 and the need's author in seat 2; a yes
+    # given then was given with both of them in it.
+    7: """
+BEGIN;
+CREATE TABLE conversations8 (
+  id TEXT PRIMARY KEY, starter_id TEXT NOT NULL, created_t REAL NOT NULL, last_t REAL NOT NULL, deal_t REAL
+);
+INSERT INTO conversations8 SELECT id, responder_id, created_t, last_t, deal_t FROM conversations;
+CREATE TABLE conversation_needs (
+  conversation_id TEXT NOT NULL, need_id TEXT NOT NULL, author_id TEXT NOT NULL, via TEXT NOT NULL DEFAULT '',
+  PRIMARY KEY (conversation_id, need_id)
+);
+INSERT INTO conversation_needs SELECT id, need_id, author_id, via FROM conversations;
+CREATE TABLE conversation_people (
+  conversation_id TEXT NOT NULL, person_id TEXT NOT NULL, seat INTEGER NOT NULL, yes_t REAL, yes_in TEXT NOT NULL
+  DEFAULT '', passed_t REAL, dealt INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (conversation_id, person_id)
+);
+INSERT INTO conversation_people SELECT id, responder_id, 1, responder_yes_t, '1,2', responder_passed_t,
+  deal_t IS NOT NULL FROM conversations;
+INSERT INTO conversation_people SELECT id, author_id, 2, author_yes_t, '1,2', author_passed_t,
+  deal_t IS NOT NULL FROM conversations;
+DROP TABLE conversations;
+ALTER TABLE conversations8 RENAME TO conversations;
+CREATE INDEX conversations_by_starter ON conversations(starter_id, last_t);
+CREATE INDEX conversation_needs_by_need ON conversation_needs(need_id);
+CREATE INDEX conversation_people_by_person ON conversation_people(person_id);
+ALTER TABLE reports ADD COLUMN seat INTEGER NOT NULL DEFAULT 0;
+PRAGMA user_version=8;
+COMMIT;
+""",
+}
 
 
 SCHEMA = """
@@ -94,30 +126,40 @@ CREATE INDEX need_communities_by_community ON need_communities(community_id);
 CREATE TABLE passes (
   need_id TEXT NOT NULL, person_id TEXT NOT NULL, t REAL NOT NULL, PRIMARY KEY (need_id, person_id)
 );
--- Two people, neither named to the other, whose assistants are talking about one need. `via`: the
--- community the responder saw the need through, fixed when the conversation opens. Both sides are shown
--- it, and an owner can act on the conversation only in that community. `last_t`: when one side last answered
--- the other; a second message before an answer does not move it, so a week unanswered ends it. A yes is to the
--- conversation as it stands: any message clears both.
+-- People, none named to the others, whose assistants are talking about one need or several. Its starter opened
+-- it on needs that reached them; each need's author is in it by that need. `last_t`: when someone last answered
+-- someone else; a second message before an answer does not move it, so a week unanswered ends it.
 CREATE TABLE conversations (
-  id TEXT PRIMARY KEY, need_id TEXT NOT NULL, author_id TEXT NOT NULL, responder_id TEXT NOT NULL,
-  via TEXT NOT NULL DEFAULT '', created_t REAL NOT NULL, last_t REAL NOT NULL,
-  author_yes_t REAL, responder_yes_t REAL, deal_t REAL, author_passed_t REAL, responder_passed_t REAL,
-  UNIQUE (need_id, responder_id)
+  id TEXT PRIMARY KEY, starter_id TEXT NOT NULL, created_t REAL NOT NULL, last_t REAL NOT NULL, deal_t REAL
 );
-CREATE INDEX conversations_by_author ON conversations(author_id, last_t);
-CREATE INDEX conversations_by_responder ON conversations(responder_id, last_t);
+CREATE INDEX conversations_by_starter ON conversations(starter_id, last_t);
+-- The needs a conversation was opened on. `via`: the community its starter saw that need through, fixed when it
+-- opens. The starter and that need's author are shown it, and an owner can act between those two only there.
+CREATE TABLE conversation_needs (
+  conversation_id TEXT NOT NULL, need_id TEXT NOT NULL, author_id TEXT NOT NULL, via TEXT NOT NULL DEFAULT '',
+  PRIMARY KEY (conversation_id, need_id)
+);
+CREATE INDEX conversation_needs_by_need ON conversation_needs(need_id);
+-- Everyone in a conversation, by seat: its starter is 1. A yes is to the conversation as it stands: any message
+-- clears every one, and `yes_in` is who was still in it when it was given, so one given before someone went no
+-- longer counts. `dealt`: in it, with a yes, when it became a deal; each such person has the others' names.
+CREATE TABLE conversation_people (
+  conversation_id TEXT NOT NULL, person_id TEXT NOT NULL, seat INTEGER NOT NULL, yes_t REAL, yes_in TEXT NOT NULL
+  DEFAULT '', passed_t REAL, dealt INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (conversation_id, person_id)
+);
+CREATE INDEX conversation_people_by_person ON conversation_people(person_id);
 CREATE TABLE messages (
   id INTEGER PRIMARY KEY, conversation_id TEXT NOT NULL, sender_id TEXT NOT NULL, text TEXT NOT NULL,
   t REAL NOT NULL
 );
 CREATE INDEX messages_by_conversation ON messages(conversation_id, id);
 CREATE INDEX messages_by_sender ON messages(sender_id, t);
--- A member reporting a need, or the other side of a conversation, to the owner of the community it came
+-- A member reporting a need, or someone in a conversation (by `seat`), to the owner of the community it came
 -- through. The owner is shown what the reported side wrote, never who either of them is.
 CREATE TABLE reports (
   id TEXT PRIMARY KEY, community_id TEXT NOT NULL, reporter_id TEXT NOT NULL, reported_id TEXT NOT NULL,
-  need_id TEXT NOT NULL DEFAULT '', conversation_id TEXT NOT NULL DEFAULT '', t REAL NOT NULL, closed_t REAL
+  need_id TEXT NOT NULL DEFAULT '', conversation_id TEXT NOT NULL DEFAULT '', t REAL NOT NULL, closed_t REAL,
+  seat INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX reports_by_community ON reports(community_id, closed_t);
 CREATE INDEX reports_by_reporter ON reports(reporter_id, t);

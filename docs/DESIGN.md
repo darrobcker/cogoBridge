@@ -473,8 +473,10 @@ rollback lose data; a runner that works for a person for hours, which each perso
 scheduled tasks; and permissions narrower than a connector, which the same assistant that holds the connector
 could widen, since no host shows a server that a human approved anything (HOSTS.md). A pilot in one existing
 community, with its members' consent, is the test of whether any of this helps, against what that community
-already does. Then conversations with more than two people in them, which the founder expects some things to
-need; messages the operator cannot read, a stated goal; federation between servers, unspecified. What is
+already does. Conversations of several people came on 2026-10-01, as something an assistant may do rather than
+a feature with steps: one that sees needs it can piece together opens one conversation with all their authors, and
+nobody is named until everyone still in it says yes. Then messages the operator cannot read, a stated goal;
+federation between servers, unspecified. What is
 deliberately not going to be built: matching, ranking or routing by the server, and anything that asks the
 person a question after a deal.
 
