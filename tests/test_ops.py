@@ -484,3 +484,18 @@ def test_deploy_puts_a_tested_commit_live_keeps_it_when_the_next_fails_and_moves
     finally:
         if pid.exists():
             os.kill(int(pid.read_text()), signal.SIGTERM)
+
+
+def test_a_store_opened_on_its_own_still_migrates(tmp_path):
+    """The deploy's rehearsal opens a copy of the live database with `bridge.store.Store` alone; the move to locks is
+    registered by `bridge.net`, and a Store that never imported it refused the database at schema 8 (2026-10-02)."""
+    import subprocess
+    import sys
+    path = tmp_path / "eight.db"
+    db = sqlite3.connect(path)
+    db.executescript((Path(__file__).parent / "schema7.sql").read_text())
+    db.close()
+    done = subprocess.run([sys.executable, "-c", "import sys; from bridge.store import Store; "
+                           "print(Store(sys.argv[1]).one('PRAGMA user_version')[0])", str(path)],
+                          capture_output=True, text=True)
+    assert done.stdout.strip() == "9", done.stderr

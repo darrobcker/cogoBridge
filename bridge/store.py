@@ -220,6 +220,10 @@ class Store:
             self.db.executescript(SCHEMA)
             self.db.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
             return
+        if version < SCHEMA_VERSION:
+            # A migration that needs the rules' code registers itself there: a Store opened on its own, as the deploy's
+            # rehearsal does, found none and refused the live database (2026-10-02).
+            from . import net  # noqa: F401
         while version < SCHEMA_VERSION and version in MIGRATIONS:
             step = MIGRATIONS[version]
             step(self.db) if callable(step) else self.db.executescript(step)
