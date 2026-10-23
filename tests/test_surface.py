@@ -14,12 +14,13 @@ from pathlib import Path
 from typing import NamedTuple
 from urllib.parse import parse_qs, unquote, urlparse
 
+import httpx
 import pytest
 import uvicorn
 from conftest import own_link
 from starlette.testclient import TestClient
 
-from bridge import net, web
+from bridge import mcp_server, net, web
 from bridge.app import create_app
 from bridge.mcp_server import create_mcp, said
 
@@ -27,6 +28,7 @@ OPERATIONS = {"check", "setup", "go", "reply", "agree", "pass", "community", "fo
 SITE = "https://bridge.test"
 CALLBACK = "https://app.test/callback"
 SECRET = "whsec_" + "A" * 32
+HEAR = "If your person wants to hear when something is waiting"
 
 
 class Connection(NamedTuple):
@@ -41,24 +43,25 @@ def browser(store, **listings) -> TestClient:
     return TestClient(create_app(store, base_url=SITE, operator="Pat Operator", **listings), base_url=SITE)
 
 
-def sign_in(http: TestClient, base: str, invite: str = "", *, name: str = "Test app") -> Connection:
+def sign_in(http: TestClient, base: str, invite: str = "", *, name: str = "Test app",
+            callback: str = CALLBACK) -> Connection:
     """An app adding Bridge, as Claude and ChatGPT do: it registers, sends its person to the Allow page — through
     the invite page first, if they came from one — and trades the code for tokens with PKCE."""
     if invite:
         http.get(f"{base}/join/{invite}")
-    client = http.post(f"{base}/register", json={"redirect_uris": [CALLBACK], "client_name": name,
+    client = http.post(f"{base}/register", json={"redirect_uris": [callback], "client_name": name,
                                                  "token_endpoint_auth_method": "none"}).json()
     verifier = secrets.token_urlsafe(48)
     challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
     asked = http.get(f"{base}/authorize", params={"response_type": "code", "client_id": client["client_id"],
-                                                  "redirect_uri": CALLBACK, "code_challenge": challenge,
+                                                  "redirect_uri": callback, "code_challenge": challenge,
                                                   "code_challenge_method": "S256", "state": "st8"},
                      follow_redirects=False)
     ref = parse_qs(urlparse(asked.headers["location"]).query)["r"][0]
     back = http.post(f"{base}/allow", data={"r": ref, "choice": "allow"}, follow_redirects=False)
     code = parse_qs(urlparse(back.headers["location"]).query)["code"][0]
     tokens = http.post(f"{base}/token", data={"grant_type": "authorization_code", "code": code,
-                                               "redirect_uri": CALLBACK, "client_id": client["client_id"],
+                                               "redirect_uri": callback, "client_id": client["client_id"],
                                                "code_verifier": verifier}).json()
     return Connection(f"{base}/mcp", tokens["access_token"], tokens["refresh_token"], client["client_id"])
 
@@ -79,9 +82,9 @@ def live(store, clock):
         time.sleep(0.02)
     _, invite = net.create_community(store, net.new_person(store), "Friends")
 
-    def friend() -> Connection:
+    def friend(**app) -> Connection:
         with TestClient(create_app(store, base_url=base), base_url=base) as http:
-            return sign_in(http, base, invite)
+            return sign_in(http, base, invite, **app)
     friend.base = base
     friend.own = lambda pid: f"{base}/c/{own_link(store, pid)}/mcp"
     yield friend
@@ -89,8 +92,17 @@ def live(store, clock):
     thread.join(timeout=5)
 
 
-def call(connector: Connection | str, tool: str, **arguments) -> str:
-    """A tool call through a signed-in connection, or through a connector URL of a person's own (the older door)."""
+def press(answer: str, action: str = "confirm") -> str:
+    """The person opens the yes page link an answer gave them, in their own browser, and presses a button on it: what
+    makes a yes count (PROTOCOL.md §3 rule 5). Returns the page they land on."""
+    url, yes_id = re.search(r"(https?://\S+/yes/[\w-]+)#(y-[a-z2-9]+)", answer).groups()
+    with httpx.Client(follow_redirects=True) as browser:
+        return browser.post(url, data={"yes": yes_id, "action": action}).text
+
+
+def call(connector: Connection | str, tool: str, client_info=None, **arguments) -> str:
+    """A tool call through a signed-in connection, or through a connector URL of a person's own (the older door).
+    `client_info`: what the app calls itself at the handshake."""
     async def run():
         from mcp import Client
         from mcp.client.streamable_http import create_mcp_http_client, streamable_http_client
@@ -99,7 +111,7 @@ def call(connector: Connection | str, tool: str, **arguments) -> str:
             # Not ended on close: a forget_me has already ended the connection, and with it the right to end a session.
             target = streamable_http_client(connector.url, terminate_on_close=False, http_client=create_mcp_http_client(
                 headers={"Authorization": f"Bearer {connector.token}"}))
-        async with Client(target) as client:
+        async with Client(target, client_info=client_info) as client:
             # Listed first, as hosts do: the client checks a result against the list, and a forget_me has ended the
             # connection by the time it would ask.
             listed = await client.list_tools()
@@ -154,7 +166,7 @@ def test_an_assistant_whose_first_call_is_go_is_still_asked_about_a_second_accou
     second-account question at `check` and the words on how to hear back never came (review)."""
     ola = live()
     said = call(ola, "go", text="a climbing partner for weekday evenings")
-    assert "If you have not yet, ask whether your person already uses" in said and "hear news" in said
+    assert "If you have not yet, ask whether your person already uses" in said and HEAR in said
     # It said to `forget_me` here without saying that takes down the need just sent (review); a code cannot come
     # over while the need is out.
     assert "`pass` it before using the code" in said
@@ -167,7 +179,7 @@ def test_the_words_on_how_to_hear_back_come_with_a_first_need_and_wait_for_it(li
     first need told the assistant to walk its person through them then, with the need still waiting (review)."""
     owner = live()
     community(owner, "create", name="Parents")
-    assert "hear news" in call(owner, "go", text="a lift to the station on Fridays")
+    assert HEAR in call(owner, "go", text="a lift to the station on Fridays")
     ola = live()
     said = call(ola, "setup", about="Only Ola's own yes counts; nobody else uses this account.")
     assert "Once your person's first need is out" in said
@@ -179,24 +191,25 @@ def test_two_friends_make_a_deal_entirely_in_chat(live):
     first = call(ola, "check")
     assert "SETUP: no name, no contact, no about" in first and "another app" in first and "Bridge code" in first
     said = call(ola, "setup", name="Ola Mensah", contact="ola@example.com", about="baking; yes to climbing")
-    assert "hear news" in said and "scheduled task" in said and "Check Bridge" in said and "notify" in said
+    assert HEAR in said and "scheduled task" in said and "Check Bridge" in said and "notify" in said
+    assert "Watch Bridge" not in said                                  # ChatGPT's own, to ChatGPT alone
     assert "Your notes on your person" in call(ola, "check") and "yes to climbing" in call(ola, "check")
     call(rae, "setup", name="Rae Iwuchukwu", contact="+44 7700 900123", about="climbing, rust")
     need = re.search(r"\[(n-[^\]]+)\]", call(ola, "go", text="A climbing partner for weekday evenings")).group(1)
     assert need in call(rae, "check") and "Ola" not in call(rae, "check")
     sent = call(rae, "reply", to=need, text="My person climbs weekly. Tuesdays?", agree=True)
     conversation = re.search(r"\[(c-[^\]]+)\]", sent).group(1)
-    assert "yes is recorded" in sent
+    assert "Nothing is shared yet" in sent and "Confirmed" in press(sent)
     assert "YOUR TURN" in call(ola, "check") and "answering" not in call(ola, "check")
     assert "ERROR" in call(ola, "reply", to=conversation, text="I'm Ola Mensah by the way")
     call(ola, "reply", to=conversation, text="Tuesdays are perfect.")
     refused = call(ola, "agree", conversation_id=conversation)          # an app from before revisions is told why
-    assert "ERROR" in refused and "revision" in refused and "Refresh" in refused
+    assert "ERROR" in refused and "revision" in refused and "out of date" in refused
     at = int(re.search(r"revision (\d+)", call(ola, "check")).group(1))
-    assert "yes is recorded" in call(ola, "agree", conversation_id=conversation, revision=at)
+    assert "Confirmed" in press(call(ola, "agree", conversation_id=conversation, revision=at))
     # Ola's message took back Rae's yes, which was to the conversation before it: Rae says it again.
     at = int(re.search(r"revision (\d+)", call(rae, "check")).group(1))
-    assert "deal" in call(rae, "agree", conversation_id=conversation, revision=at).lower()
+    assert "it is a deal" in press(call(rae, "agree", conversation_id=conversation, revision=at))
     assert "+44 7700 900123" in call(ola, "check") and "Ola Mensah" in call(rae, "check")
 
 
@@ -216,8 +229,8 @@ def test_three_people_pieced_together_make_one_deal_in_chat(live):
     assert "Sam" not in seen and "Rae" not in seen
     for who in (ola, rae, sam):
         at = int(re.search(rf"\[{conversation}\].*?revision (\d+)", call(who, "check"), re.S).group(1))
-        last = call(who, "agree", conversation_id=conversation, revision=at)
-    assert "deal" in last.lower()
+        last = press(call(who, "agree", conversation_id=conversation, revision=at))
+    assert "it is a deal" in last
     shown = call(ola, "check")
     assert "Sam Lee" in shown and "+44 7700 900123" in shown and "everyone in it said yes" in shown
 
@@ -229,17 +242,17 @@ def test_an_app_holding_an_old_tool_list_still_works_and_is_told_to_refresh(live
     weeks pass with none; a call through a link that is nobody's wrote a row too (review)."""
     ola, rae = live(), live()
     made = call(ola, "create_community", name="Climbers")
-    assert "/join/" in made and "Refresh" in made
+    assert "/join/" in made and "out of date" in made
     link = re.search(r"(http\S+/join/\S+)", made).group(1)
-    assert "Joined" in call(rae, "join", invite_link=link) and "Refresh" in call(rae, "join", invite_link=link)
+    assert "Joined" in call(rae, "join", invite_link=link) and "out of date" in call(rae, "join", invite_link=link)
     climbers = re.search(r"<<<Climbers>>> \[(g-[a-z2-9]+)\]", call(rae, "check")).group(1)
     assert call(rae, "invite", community_id=climbers).startswith(link + " ")
     refused = call(rae, "remove", community_id=climbers, ref="n-x")
-    assert refused.startswith("ERROR") and "only whoever started" in refused and "Refresh" in refused
+    assert refused.startswith("ERROR") and "only whoever started" in refused and "out of date" in refused
     left = call(rae, "leave", community_id=climbers)
     assert "Left" in left and "started this community" not in left
     unknown = call(ola, "make_friends", name="x")
-    assert unknown.startswith("ERROR") and "community" in unknown and "Refresh" in unknown
+    assert unknown.startswith("ERROR") and "community" in unknown and "out of date" in unknown
     assert call(ola, "tools") == OPERATIONS                                  # the old names stay out of the list
     retired = {r["tool"]: r["n"] for r in store.all("SELECT tool, COUNT(*) n FROM calls WHERE person_id='' "
                                                    "AND tool LIKE 'retired %' GROUP BY tool")}
@@ -374,8 +387,10 @@ def test_a_yes_with_a_reply_that_meets_theirs_is_the_deal_and_is_not_sent(live):
     need = re.search(r"\[(n-[^\]]+)\]", call(ola, "go", text="a climbing partner")).group(1)
     sent = call(rae, "reply", to=need, text="keen, Tuesdays at 6", agree=True)
     conversation = re.search(r"\[(c-[^\]]+)\]", sent).group(1)
+    press(sent)
     met = call(ola, "reply", to=conversation, text="Tuesdays at 6 then", agree=True, revision=1)
-    assert "not sent" in met and "deal" in met and "Rae" in call(ola, "check")
+    assert "not sent" in met.lower() and "Rae" not in call(ola, "check")      # nothing until she confirms
+    assert "it is a deal" in press(met) and "Rae" in call(ola, "check")
 
 
 def test_a_yes_taken_back_and_a_new_link_from_chat(live, store):
@@ -446,23 +461,25 @@ def test_a_second_forget_me_in_flight_is_told_it_is_done(live, store, monkeypatc
     assert call(ola, "forget_me", confirm="delete everything").startswith("Deleted;")
 
 
-def test_the_first_512_characters_of_the_instructions_stand_alone(store):
-    """Hosts keep an old copy of the instructions and none promises to show them whole; the old ones opened with
-    a setup interview and named who runs the server only at the very end. In the first 512 characters, in this
-    order: what this is and who can read it, one safety question, `go`, how to hear back, with an operator's name
-    of up to 80 characters. The safety question's answer sent every yes through whoever "decides for" the person,
-    a coercive partner too, and had nowhere to be kept for a later chat; and `go` came before any `check`, so the
-    first need went out before the assistant could know its community was small (review)."""
+def test_the_instructions_are_short_put_consent_first_and_name_no_app(store):
+    """Directory review: server instructions under 1,800 characters with the consent rules first, and nothing in
+    them for one app alone — ChatGPT's "watch Bridge" went to Claude too. The first paragraph used to stand alone in
+    512 characters; now it is the consent rules, whole."""
     for operator in ("", "Pat Operator-Fairweather (pat.operator@example.com)", "P" * 80):
-        head = create_mcp(store, base_url=SITE, operator=operator).instructions[:512]
-        first = head[:head.index("\n\n")]
-        if operator:
-            assert operator in first
-        order = [first.index(part) for part in ("Bridge", "cannot open what members write",
-                                                "anyone else use this AI account",
-                                                "`about`", "`check`", "`go`", "how they want news")]
-        assert order == sorted(order), first
-        assert "goes through that person" not in first and "no one else" in first
+        text = create_mcp(store, base_url=SITE, operator=operator).instructions
+        assert len(text) < 1800, len(text)
+        rules = text[:text.index("\n\n")]
+        assert rules.startswith("Bridge. Consent rules first:")
+        flat = " ".join(rules.split())
+        for rule in ("Act only when your person asks", "`check` when they ask what's waiting",
+                     "`go` when they ask to post", "`agree` shares nothing by itself", "yes page",
+                     "never open it or press anything on it for them", "only after they confirm there",
+                     "takes any back", "carry no name, but every member of each community it goes to can read it",
+                     "its details can identify", "`forget_me` only when they ask"):
+            assert rule in flat, rule
+        assert operator in text
+        for app in ("ChatGPT", "Claude", "OpenAI", "Anthropic", "Gemini"):
+            assert app not in text, app
 
 
 def test_tool_titles_speak_as_the_person_and_the_hints_say_what_a_tool_can_undo_and_whom_it_reaches(store):
@@ -479,18 +496,30 @@ def test_tool_titles_speak_as_the_person_and_the_hints_say_what_a_tool_can_undo_
     assert {name for name, a in tools.items() if a.read_only_hint} == {"check"}
 
 
-def test_tool_descriptions_say_what_a_tool_does_and_give_no_orders(store):
-    """Claude's directory requires tool descriptions without instructions about model behaviour; the rules for when
-    to call what are in the server's instructions, which every assistant receives. "Call at the start of a
-    conversation" and "only when they have given it" were in the descriptions (directory review)."""
-    tools = asyncio.run(create_mcp(store, base_url=SITE).list_tools())
-    for tool in tools:
-        for order in (r"\bonly (when|if)\b", r"\bcall (at|this|it)\b", r"\b(must|should)\b", r"\bYOUR PERSON\b",
-                      r"\bask(ed)?\b.*\bsay-so\b", r"\buse this\b"):
-            assert not re.search(order, tool.description, re.I), (tool.name, order)
-    rules = create_mcp(store, base_url=SITE).instructions
-    for rule in ("`agree` only on your person's yes", "`forget_me` only when your person asks", "Each chat, `check`"):
-        assert rule in " ".join(rules.split()), rule
+# Phrases that had an assistant act unasked, or hide what it did (directory review).
+UNASKED = (r"\balways\b", r"\bevery (new )?(chat|turn|session)\b", r"\beach (new )?(chat|turn|session)\b",
+           r"\bstart of (each|every|a|the) (chat|conversation)\b", r"\bsilent(ly)?\b", r"\bsay nothing\b",
+           r"\bwithout (asking|telling)\b",
+           r"\bautomatically\b", r"\bproactive", r"anything another person could be part of",
+           r"\bnever show\b", r"\btool names\b", r"\bscheduled run\b", r"\byes in advance\b",
+           r"agree where I've already said yes", r"\bunasked\b")
+
+
+def test_tools_act_on_the_persons_request_and_their_descriptions_say_when(store):
+    """Directory review: tools act only when the person asks — `check` when they ask what's waiting, `go` when they
+    ask to post — with the detail in each tool's description, not the instructions; and nothing tells an assistant
+    to call anything at every chat, always, silently, or to hide tool names or ids."""
+    server = create_mcp(store, base_url=SITE)
+    tools = {t.name: t.description for t in asyncio.run(server.list_tools())}
+    assert "when they ask what is waiting" in tools["check"] and "when they ask to post" in tools["go"]
+    for name in ("setup", "reply", "pass", "community"):
+        assert "as the person asks" in tools[name], name
+    assert "when they say yes" in tools["agree"] and "shares nothing by itself" in tools["agree"]
+    assert "when they ask" in tools["forget_me"]
+    for name, text in [*tools.items(), ("instructions", server.instructions), ("RULES", mcp_server.RULES)]:
+        for phrase in UNASKED:
+            assert not re.search(phrase, text, re.I), (name, phrase)
+        assert not re.search(r"\bmust\b|\bYOUR PERSON\b", text), name
 
 
 def test_go_makes_no_absolute_claim(live):
@@ -500,6 +529,147 @@ def test_go_makes_no_absolute_claim(live):
     assert "without your person's name" in said
     for absolute in ("anonymous", "nobody", "no one", "guarantee", "in front of", "assistants see it"):
         assert absolute not in said.lower(), absolute
+
+
+# -- consent: a yes counts only once its person confirms it on their own page (PROTOCOL.md §3 rule 5) ---------------
+
+def _pair(live):
+    ola, rae = live(), live()
+    for who, name, contact in ((ola, "Ola Mensah", "ola@example.com"), (rae, "Rae Iwuchukwu", "+44 7700 900123")):
+        call(who, "setup", name=name, contact=contact, about="climbing")
+    need = re.search(r"\[(n-[^\]]+)\]", call(ola, "go", text="A climbing partner for Tuesdays")).group(1)
+    sent = call(rae, "reply", to=need, text="My person climbs Tuesdays at six, at the wall on Hill Street.")
+    return ola, rae, re.search(r"\[(c-[^\]]+)\]", sent).group(1)
+
+
+def _yes(who, conversation: str) -> str:
+    at = int(re.search(rf"\[{conversation}\].*?revision (\d+)", call(who, "check"), re.S).group(1))
+    return call(who, "agree", conversation_id=conversation, revision=at)
+
+
+def _page_of(answer: str) -> str:
+    return re.search(r"(https?://\S+/yes/[\w-]+)#", answer).group(1)
+
+
+def test_agree_in_chat_releases_nothing_until_each_person_confirms_on_their_page(live):
+    """Directory review: `agree` handed over a name and contact on the model's word alone. Now it returns a link to
+    the person's own page; their name and contact go only once they press Confirm there, and only once everyone
+    has. Opening the page, as a chat app previewing a link does, changes nothing."""
+    ola, rae, conversation = _pair(live)
+    said = {key: _yes(who, conversation) for key, who in (("ola", ola), ("rae", rae))}
+    for answer in said.values():
+        assert "Nothing is shared yet" in answer and "/yes/" in answer and "never open it" in answer, answer
+    assert "Rae" not in call(ola, "check") and "ola@example.com" not in call(rae, "check")
+    with httpx.Client() as browser:
+        opened = [browser.get(_page_of(said["rae"])) for _ in range(2)]
+    assert "Rae" not in call(ola, "check") and "DEAL [" not in call(rae, "check")
+    page = opened[0].text
+    assert opened[0].status_code == 200 and "Waiting for you to confirm" in page
+    assert "+44 7700 900123" in page and "Rae Iwuchukwu" in page        # what a deal would hand over: her own
+    assert "&lt;&lt;&lt;A climbing partner for Tuesdays&gt;&gt;&gt;" in page   # member text, fenced as everywhere
+    assert opened[0].headers["cache-control"].startswith("no-store") and opened[0].headers["x-robots-tag"] == "noindex"
+    assert not re.search(r"<script(?![^>]*\bsrc=)|\son[a-z]+=", page)
+    assert "Confirmed" in press(said["ola"]) and "Rae" not in call(ola, "check")
+    assert "it is a deal" in press(said["rae"])
+    assert "+44 7700 900123" in call(ola, "check") and "Ola Mensah" in call(rae, "check")
+
+
+def test_the_yes_page_lists_every_yes_and_takes_any_back(live):
+    """People can see and take back what they agreed to: a waiting yes, and after a deal, what it shows from then
+    on. A link that is not a page, or a yes not on it, opens nothing."""
+    ola, rae, conversation = _pair(live)
+    first = _yes(ola, conversation)
+    assert "Taken back" in press(first, "take_back")
+    assert "Taken back" in press(first, "confirm")                     # and it cannot be confirmed after
+    url = _page_of(first)
+    press(_yes(ola, conversation))
+    assert "it is a deal" in press(_yes(rae, conversation)) and "Ola Mensah" in call(rae, "check")
+    page = httpx.get(url).text
+    assert page.count("<section") == 2 and "A deal" in page and "Taken back" in page
+    dealt = re.search(r'<section id="(y-\w+)">\s*<h2>A deal', page).group(1)
+    assert "no longer shows" in press(f"{url}#{dealt}", "take_back")
+    assert "Ola Mensah" not in call(rae, "check") and "no longer shown" in call(rae, "check")
+    assert "+44 7700 900123" not in call(ola, "check")
+    assert httpx.get(f"{live.base}/yes/not-a-page").status_code == 404
+    assert httpx.post(url, data={"yes": "y-nonesuch", "action": "confirm"}).status_code == 404
+
+
+def test_withdraw_in_chat_does_what_the_page_does(live):
+    ola, rae, conversation = _pair(live)
+    press(_yes(ola, conversation))
+    assert "taken back" in call(ola, "agree", conversation_id=conversation, withdraw=True)
+    press(_yes(ola, conversation))
+    press(_yes(rae, conversation))
+    assert "no longer shows" in call(rae, "agree", conversation_id=conversation, withdraw=True)
+    assert "Rae Iwuchukwu" not in call(ola, "check")
+
+
+def test_a_new_link_code_gives_the_yes_page_a_new_link(live):
+    """`new_link` is for when someone else may have had access: their old yes page link stops working too."""
+    ola, rae, conversation = _pair(live)
+    old = _page_of(_yes(ola, conversation))
+    code = re.search(r"code: ([a-z2-9]{4}-[a-z2-9]{4}-[a-z2-9]{4})", call(ola, "setup", new_link=True)).group(1)
+    fresh = live()
+    assert "new link" in call(fresh, "setup", code=code)
+    assert httpx.get(old).status_code == 404
+    new = re.search(r"YES PAGE: (https?://\S+/yes/[\w-]+)", call(fresh, "check")).group(1)
+    assert new != old and "Waiting for you to confirm" in httpx.get(new).text
+
+
+def test_what_only_one_app_does_is_said_only_to_that_app(live):
+    """Directory review: ChatGPT's own instructions were served to Claude. Which app a call comes from is read from
+    what it calls itself at the handshake, or else from where its sign-in returns; any other app gets words for
+    any app."""
+    from mcp.types import Implementation
+    chatgpt = live(name="ChatGPT", callback="https://chatgpt.com/connector_platform_oauth_redirect")
+    claude = live(name="Claude", callback="https://claude.ai/api/mcp/auth_callback")
+    other = live()
+    apps = (("chatgpt", chatgpt), ("claude", claude), ("other", other))
+    said = {app: call(who, "go", text=f"a climbing partner, asked in {app}") for app, who in apps}
+    assert mcp_server.WATCH_EVENTS in said["chatgpt"]
+    assert mcp_server.WATCH_EVENTS not in said["claude"] and mcp_server.WATCH_EVENTS not in said["other"]
+    assert mcp_server.WATCH_LINE in said["claude"] and mcp_server.WATCH_LINE in said["other"]
+    stale = {app: call(who, "create_community", name=f"Climbers {app}") for app, who in apps}
+    assert "Settings → Apps → Bridge → Refresh" in stale["chatgpt"]
+    assert "Claude, start a new chat" in stale["claude"] and "ChatGPT" not in stale["claude"]
+    assert "ChatGPT" not in stale["other"] and "Claude" not in stale["other"]
+    assert "chatgpt.com" in call(chatgpt, "setup", notify="on")
+    assert "chatgpt.com" not in call(claude, "setup", notify="on")
+    # Named at the handshake, by an app whose sign-in returns somewhere else.
+    named = call(live(), "go", text="a lift to the coast", client_info=Implementation(name="openai-mcp", version="1"))
+    assert mcp_server.WATCH_EVENTS in named
+    assert (mcp_server.hostNamed("openai-mcp"), mcp_server.hostNamed("claude-ai"), mcp_server.hostNamed("mcp")) == (
+        "chatgpt", "claude", "")
+
+
+def test_no_answer_tells_an_assistant_to_act_unasked(live):
+    """A first visit through to a deal: no answer says to check every chat, to act silently, to say yes for the
+    person, or to keep tool names and ids from them (directory review)."""
+    ola, rae, conversation = _pair(live)
+    answers = [call(ola, "check"), call(rae, "check"), _yes(ola, conversation), _yes(rae, conversation)]
+    answers += [press(answers[2]), press(answers[3]), call(ola, "check"), call(ola, "setup", notify="on")]
+    fresh = live()
+    answers += [call(fresh, "check"), call(fresh, "setup", about="nothing yet"), call(fresh, "go", text="tennis")]
+    for answer in answers:
+        for phrase in UNASKED:
+            assert not re.search(phrase, answer, re.I), (phrase, answer[:300])
+
+
+def test_nothing_says_anonymous(store):
+    """Directory review: a post is unnamed, but every member of the community it goes through can read it, and its
+    details can identify someone; "anonymous" said more than that. Nothing an assistant or a person is shown says
+    it, and what posts and replies say instead is in their descriptions."""
+    server = create_mcp(store, base_url=SITE)
+    tools = {t.name: " ".join(t.description.split()) for t in asyncio.run(server.list_tools())}
+    here = Path(web.__file__).parent
+    shown = [server.instructions, mcp_server.RULES, *tools.values()]
+    shown += [f.read_text() for f in (here / "templates").glob("*.html")]
+    shown += [(here / f).read_text() for f in ("mcp_server.py", "net.py", "web.py")]
+    for text in shown:
+        assert "anonym" not in text.lower(), text[:200]
+    assert "carries no name" in tools["go"] and "carries no name" in tools["reply"]
+    assert "every member of each community it goes to can read it" in tools["go"]
+    assert "can identify them" in tools["go"]
 
 
 # -- the invite pages ---------------------------------------------------------------------------------------
@@ -1074,12 +1244,12 @@ def test_a_member_reports_and_the_owner_acts_from_chat(live):
     assert "Removed" in community(owner, "remove", ref=report)
     assert "REPORTED" not in call(owner, "check")
     on = call(ola, "setup", notify="on")
-    assert "Nudges: on" in on and re.search(r"https://ntfy\.sh/[\w-]{22}", on) and "chatgpt.com" in on
+    assert "Nudges: on" in on and re.search(r"https://ntfy\.sh/[\w-]{22}", on) and "chatgpt.com" not in on
     # The topic was shown once, so an assistant told to compare it with the app's had nothing to compare (review 3).
     name = re.search(r"https://ntfy\.sh/([\w-]{22})", on).group(1)
     again = call(ola, "setup", notify="on")
     assert "test" in again and name in again
-    assert "Refresh" in call(ola, "setup", notify="https://ntfy.sh/ola")
+    assert "out of date" in call(ola, "setup", notify="https://ntfy.sh/ola")
 
 
 def test_a_fresh_servers_first_community_has_a_person_for_its_owner(tmp_path, monkeypatch, capsys):

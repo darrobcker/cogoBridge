@@ -1,19 +1,22 @@
 """The only web pages: home, the invite page and the connect page it leads to, the Allow page an app's sign-in opens,
-the consent text, which is also the privacy policy and the terms, and one saying an address has no page.
+the consent text, which is also the privacy policy and the terms, a person's yes page, a theme's documentation, and one
+saying an address has no page.
 
-Everything after that happens in the chat. There is no inbox, no settings page and no password, and no page knows
-who anyone is: a person and their first membership are made at their AI's first tool call through a connection
-Allow made, so a page previewed, reloaded or pressed twice makes nobody.
+Everything else happens in the chat. There is no inbox, no settings page and no password, and no page knows who anyone
+is: a person and their first membership are made at their AI's first tool call through a connection Allow made, so a
+page previewed, reloaded or pressed twice makes nobody. The yes page knows its person only by its link, and is where
+they confirm, themselves, each yes their AI recorded (PROTOCOL.md §3 rule 5): a name and a contact leave nowhere else.
 """
 from __future__ import annotations
 
 import json
 import sqlite3
 import subprocess
+from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import parse_qs, quote, urlparse
 
-from jinja2 import ChoiceLoader, Environment, FileSystemLoader, select_autoescape
+from jinja2 import ChoiceLoader, Environment, FileSystemLoader, TemplateNotFound, select_autoescape
 from mcp.server.auth.provider import construct_redirect_uri
 from starlette.applications import Starlette
 from starlette.requests import Request
@@ -22,6 +25,7 @@ from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 
 from . import net
+from .mcp_server import said
 from .store import Store
 
 DAY, YEAR = "public, max-age=86400", "public, max-age=31536000, immutable"
@@ -48,7 +52,7 @@ AIS = ("claude", "chatgpt")         # anything else is "another AI"
 INVITE, AI = "bridge_invite", "bridge_ai"   # the cookies: an invite code, and the app pressed for; no more (§5)
 # Where each app's sign-in returns. An invite pressed for one of these goes only to a sign-in that returns there, so
 # someone else's app, allowed by a person tricked into it, cannot take the community along (review).
-RETURNS = {"claude": ("claude.ai", "claude.com"), "chatgpt": ("chatgpt.com", "openai.com")}
+RETURNS = net.APP_RETURNS
 
 
 def _their_app(ai: str, redirect_uri: str) -> bool:
@@ -179,6 +183,54 @@ def create_app(store: Store, *, base_url: str, operator: str = "", claude_listin
         return RedirectResponse(construct_redirect_uri(data["redirect_uri"], code=code, state=data["state"]),
                                 status_code=303)
 
+    async def docs(request: Request) -> Response:
+        """How Bridge works, for a directory listing and for anyone: a theme's own page, since its words name its
+        operator and how to reach them. A server with none has no /docs."""
+        try:
+            return page("docs.html")
+        except TemplateNotFound:
+            return page("missing.html", 404)
+
+    def when(t: float) -> str:
+        return datetime.fromtimestamp(t, UTC).strftime("%-d %b %Y, %H:%M UTC")
+
+    async def yes(request: Request) -> Response:
+        """A person's yes page: each yes their AI recorded, which they confirm or take back here themselves. Known only
+        by its link, and nothing a GET does changes anything: chat apps fetch links to preview them. Member text goes
+        through said(), as everywhere else, in case an AI reads the page."""
+        link = request.path_params["link"][:80]
+        if request.method == "POST":
+            form = await request.form()
+            act = {"confirm": net.confirmYes, "take_back": net.revokeYes}.get(str(form.get("action", "")))
+            yes_id = str(form.get("yes", ""))[:20]
+            try:
+                done = act(store, link, yes_id) if act else ""
+            except net.NotYours:
+                return page("missing.html", 404)
+            # Back to the page by GET, so a reload asks nothing again.
+            return RedirectResponse(f"/yes/{link}?done={quote(done)}#{quote(yes_id)}", status_code=303)
+        yeses = net.yesPage(store, link)
+        if yeses is None:
+            return page("missing.html", 404)
+        shown = []
+        for y in yeses:
+            s = y["shown"]
+            shown.append({"id": y["id"], "state": y["state"], "said": when(y["created_t"]), "until": when(y["until_t"]),
+                          "needs": [{"by": n.get("by", ""), "text": said(n.get("text", "")),
+                                     "community": said(n["community"]) if n.get("community") else ""}
+                                    for n in s.get("needs", [])],
+                          "people": s.get("people", 0),
+                          "last": [{"from": m.get("from", ""), "text": said(m.get("text", ""))}
+                                   for m in s.get("last", [])],
+                          "name": said(s["name"], label=False) if s.get("name") else "",
+                          "contact": said(s["contact"], label=False) if s.get("contact") else ""})
+        response = page("yes.html", yeses=shown, done=request.query_params.get("done", "")[:20],
+                        days=net.YES_WAITS_S // 86400)
+        # Kept by nobody on the way, and found by no search engine.
+        response.headers["Cache-Control"] = "no-store, no-transform"
+        response.headers["X-Robots-Tag"] = "noindex"
+        return response
+
     async def missing(request: Request, exc: Exception) -> Response:
         return page("missing.html", 404)
 
@@ -188,4 +240,5 @@ def create_app(store: Store, *, base_url: str, operator: str = "", claude_listin
                              Route("/.well-known/openai-apps-challenge", challenge),
                              Route("/favicon.ico", favicon), Mount("/static", _Kept(directory=static)),
                              Route("/allow", allow, methods=["GET", "POST"]),
-                             Route("/join/{invite}", join, methods=["GET", "POST"])])
+                             Route("/join/{invite}", join, methods=["GET", "POST"]),
+                             Route("/yes/{link}", yes, methods=["GET", "POST"]), Route("/docs", docs)])

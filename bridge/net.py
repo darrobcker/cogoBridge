@@ -3,8 +3,8 @@
 This module is the reference implementation of PROTOCOL.md, and the only place its rules live. Someone
 tells their assistant "go"; it sends a need to their communities; every other member's assistant sees
 it; one replies, which opens a conversation between two people who are not named to each other; when
-each person has told their own assistant yes, it is a deal and each is shown the other's name and
-contact. Nothing else is ever revealed.
+each person has told their own assistant yes and confirmed it on their yes page, it is a deal and each is shown
+the other's name and contact. Nothing else is ever revealed.
 
 Every function takes the acting person's id and raises `Refused` (with a reason that person's assistant
 can act on) or `NotYours` (which says nothing about whether the thing exists).
@@ -17,6 +17,7 @@ import re
 import secrets
 import sqlite3
 from pathlib import Path
+from urllib.parse import urlparse
 
 from . import guard, vault
 from .store import MIGRATIONS, Store
@@ -47,6 +48,7 @@ LINK_CODE_S = 3600                # a code from the chat that joins another conn
 LINK_CODE = 12                    # characters (59 bits) of one, typed by hand from one app into another
 WAKE_S = 30 * 86400               # the longest an app's subscription to be woken lasts before it renews it
 ESCROW_S = 14 * 86400             # a key from before locks waits this long for its person's connections to copy it
+YES_WAITS_S = 3 * 86400           # a yes waits this long for its person to confirm it on their yes page
 MAX_TEXT, MAX_NAME, MAX_CONTACT = 2000, 80, 200
 NUDGE_EVERY_S = 600               # at most one nudge per person per ten minutes
 NTFY = "https://ntfy.sh/"         # where every nudge goes: a topic the server made, never an address a member chose
@@ -257,6 +259,8 @@ def _start_over(store: Store, person_id: str) -> bytes:
                "conversation_id IN (SELECT id FROM conversations WHERE deal_t IS NULL)", now, person_id)
     store.exec("UPDATE conversation_people SET key='' WHERE person_id=?", person_id)
     store.exec("DELETE FROM reveals WHERE to_id=?", person_id)
+    store.exec("DELETE FROM yes_pages WHERE person_id=?", person_id)
+    store.exec("DELETE FROM yeses WHERE person_id=?", person_id)
     vault.hold(person_id, private)
     return private
 
@@ -299,8 +303,8 @@ def setup(store: Store, person_id: str, *, name: str | None = None, contact: str
         notify = {"none": "off"}.get(notify.strip().lower(), notify.strip().lower())
         if notify not in ("on", "off"):
             raise Refused('nudges take notify="on" now (or "off"): the server makes the address. If your tool list '
-                          "says to pass a link, it is out of date: in ChatGPT, Settings → Apps → Bridge → "
-                          "Refresh; in Claude, a new chat. Nothing was saved: send the other fields again without "
+                          "says to pass a link, it is out of date: refresh Bridge's tools in your app's settings, "
+                          "or start a new chat. Nothing was saved: send the other fields again without "
                           'notify, or with notify="on"')
     outcome = None
     with store.transaction():
@@ -383,7 +387,7 @@ def me(store: Store, person_id: str) -> dict:
                 "small": small(store, c["id"])}
         if c["owner"]:
             # Everyone who ever joined, not who is in now: a count that dropped when an owner removed someone
-            # by a need told them whether its anonymous author was still a member, and one that dropped as a
+            # by a need told them whether its unnamed author was still a member, and one that dropped as a
             # need vanished told them its author had left (review). No count of removals: a second removal
             # that did not move it said two things had one author (rethink).
             item["joined"] = store.one("SELECT COUNT(*) n FROM memberships WHERE community_id=? AND person_id<>?",
@@ -481,6 +485,23 @@ def register_client(store: Store, client_id: str, info: str) -> None:
             raise Refused("too many apps registered today; try again tomorrow")
         _count(store, "apps")
         store.exec("INSERT OR REPLACE INTO clients(id, info, created_t) VALUES (?,?,?)", client_id, info, store.now())
+
+
+# Where each app's sign-in returns: how a connection is known to be that app's (web.py, `clientHost`).
+APP_RETURNS = {"claude": ("claude.ai", "claude.com"), "chatgpt": ("chatgpt.com", "openai.com")}
+
+
+def clientHost(store: Store, grant_id: str) -> str:
+    """Which app a connection signed in from, by where its sign-in returns: "claude", "chatgpt", or "" for any other,
+    so that what only one app does is said only to that app."""
+    row = store.one("SELECT c.info FROM grants g JOIN clients c ON c.id=g.client_id WHERE g.id=?", grant_id)
+    try:
+        uris = (json.loads(row["info"]).get("redirect_uris") or []) if row else []
+    except (ValueError, AttributeError):
+        uris = []
+    hosts = {urlparse(str(uri)).hostname or "" for uri in uris}
+    return next((app for app, domains in APP_RETURNS.items()
+                 if hosts and all(any(h == d or h.endswith("." + d) for d in domains) for h in hosts)), "")
 
 
 def client(store: Store, client_id: str) -> str | None:
@@ -814,6 +835,7 @@ def use_link_code(store: Store, person_id: str, grant_id: str, code: str, token:
         if row["replace"]:
             _end_grants(store, "person_id=? AND id<>?", target, grant_id)
             store.exec("UPDATE connectors SET revoked_t=? WHERE person_id=? AND revoked_t IS NULL", store.now(), target)
+            _moveYesPage(store, target)
         return (MOVED if row["replace"] else LINKED), target
 
 
@@ -843,9 +865,14 @@ def forget_me(store: Store, person_id: str, confirm: str) -> None:
         for table in ("memberships", "conversation_people", "grants", "connectors"):
             column = "person_key" if table in ("grants", "connectors") else "key"
             store.exec(f"UPDATE {table} SET {column}='' WHERE person_id=?", person_id)
-        # everyone's messages: the guard looks only at its writer, so the others' may carry this one's name
+        # everyone's messages: the guard looks only at its writer, so the others' may carry this one's name; and
+        # what the others' yes pages kept of them
         store.exec("DELETE FROM messages WHERE conversation_id IN "
                    "(SELECT conversation_id FROM conversation_people WHERE person_id=?)", person_id)
+        store.exec("UPDATE yeses SET shown='' WHERE conversation_id IN "
+                   "(SELECT conversation_id FROM conversation_people WHERE person_id=?)", person_id)
+        store.exec("DELETE FROM yeses WHERE person_id=?", person_id)
+        store.exec("DELETE FROM yes_pages WHERE person_id=?", person_id)
         store.exec("UPDATE needs SET text='', author_key='', same='', closed_t=COALESCE(closed_t, ?) WHERE "
                    "author_id=?", now, person_id)
         store.exec("UPDATE memberships SET left_t=COALESCE(left_t, ?) WHERE person_id=?", now, person_id)
@@ -1007,9 +1034,9 @@ def _owned(store: Store, owner_id: str, community_id: str) -> str:
 def _person_behind(store: Store, owner_id: str, ref: str, community_id: str) -> str | None:
     """Who is behind a need sent to this community, a conversation of the owner's through it, or an open report
     there — the only ways an owner ever meets a member. Only through this community: a conversation from
-    elsewhere let an owner test whether the anonymous person in it was a member here (review, critical). Never
+    elsewhere let an owner test whether the unnamed person in it was a member here (review, critical). Never
     through what a deal could have named: whoever learned a name in a deal removed that person by the deal, by
-    the need it was on, or by a report on either, and watched which anonymous needs went with them (rethink)."""
+    the need it was on, or by a report on either, and watched which unnamed needs went with them (rethink)."""
     need_id = conv_id = ""
     partners = False
     if ref.startswith("r-"):
@@ -1054,9 +1081,9 @@ def _person_behind(store: Store, owner_id: str, ref: str, community_id: str) -> 
         # Pointing an owner at another report sent them round in a circle: the one they used was someone else's.
         if ref.startswith("r-"):
             raise Refused("this report cannot be acted on: removing someone by it could show someone who knows "
-                          "them which of the anonymous needs there were theirs. `dismiss` clears it")
+                          "them which of the unnamed needs there were theirs. `dismiss` clears it")
         raise Refused("that is a deal, or on a need your person has a deal on: removing someone through it would "
-                      "show your person which of the anonymous needs there were theirs, so it cannot be done. Settle "
+                      "show your person which of the unnamed needs there were theirs, so it cannot be done. Settle "
                       "it directly on their contact")
     return who
 
@@ -1236,7 +1263,7 @@ def _via(store: Store, need_id: str, reader_id: str) -> str | None:
 def _sent_to_them(store: Store, need_id: str, person_id: str) -> bool:
     """Sent to a community they are in, whoever else is still there. A need that was in front of them and
     has since gone — closed, expired, or its author left — must read the same whichever it was: telling
-    those apart would tell them its anonymous author had left (review)."""
+    those apart would tell them its unnamed author had left (review)."""
     return bool(store.one(
         "SELECT 1 FROM needs n JOIN need_communities nc ON nc.need_id=n.id JOIN memberships m "
         "ON m.community_id=nc.community_id AND m.person_id=? AND m.left_t IS NULL WHERE n.id=? AND n.author_id<>?",
@@ -1246,7 +1273,7 @@ def _sent_to_them(store: Store, need_id: str, person_id: str) -> bool:
 def _in_front(store: Store, need_id: str, reader_id: str, gone: str) -> tuple[sqlite3.Row, str]:
     """A need sent to the reader, and the community it reaches them through while it is still open. One that has
     gone refuses with `gone` the same whether it closed, expired or its author left: telling those apart would
-    tell the reader its anonymous author had left (review)."""
+    tell the reader its unnamed author had left (review)."""
     need = store.one("SELECT * FROM needs WHERE id=?", need_id)
     if not need or not _sent_to_them(store, need_id, reader_id):
         raise NotYours()
@@ -1437,10 +1464,11 @@ def reply(store: Store, person_id: str, to: str, text: str, *, agree_too: bool =
     """Write to everyone else in a conversation. `to` is a need that reached them, which opens a conversation with
     its author; several needs, separated by spaces or commas, which open one conversation with all their authors;
     or a conversation they are in. `agree_too` carries their person's yes with the message, in one step — for an
-    assistant working on a yes given in advance — and in a conversation already open, needs the `revision` their
-    person saw. Every message clears every yes: a yes is to the conversation as it stands. A yes that completes
-    everyone else's makes the deal on what all saw, and its message is not sent. Returns (conversation id, what
-    `agree` said, MET for that deal, CLEARED when the message took back their own yes, or None)."""
+    yes waits for its person to confirm it on their yes page, as `agree`'s does — and in a conversation already open,
+    needs the `revision` their person saw. Every message clears every yes, waiting or confirmed: a yes is to the
+    conversation as it stands. A yes that meets everyone else's is not sent with its message, which would clear
+    theirs: its person's confirming makes the deal on what all saw. Returns (conversation id, what `agree` said,
+    MET for a yes that met everyone else's, CLEARED when the message took back their own yes, or None)."""
     text = _text(text, "the message")
     refs = list(dict.fromkeys(r for r in (_seat_ref(raw)[0] for raw in re.split(r"[\s,]+", to)) if r))
     if not refs:
@@ -1469,12 +1497,15 @@ def reply(store: Store, person_id: str, to: str, text: str, *, agree_too: bool =
         others = [p for p in inside if p["person_id"] != person_id]
         if len(others) == len(inside):
             raise Refused(_GONE_FROM)
+        waiting = _waiting(store, person_id, conv["id"], signature)
         if agree_too:
             _as_seen(store, conv, person_id, revision, "sent")
         if agree_too and all(_holds_yes(p, signature) for p in others):
             # Their yeses were to what this person saw, so they meet there, and the message, which they never saw, is
             # not sent. Sent first, it took their yes back: a yes with a reply never made a deal, and two sides each
-            # replying with a yes went round for ever (review).
+            # replying with a yes went round for ever (review). The yes waits for its person's confirming, which
+            # makes the deal; the message held back tells this assistant the others had said yes, the one thing
+            # about another's yes anyone learns before a deal (PROTOCOL.md §3 rule 5).
             _agree(store, person_id, conv["id"], revision=revision)
             outcome = MET
         else:
@@ -1500,19 +1531,23 @@ def reply(store: Store, person_id: str, to: str, text: str, *, agree_too: bool =
             # from the first message still unanswered: a sender who kept writing kept a silent conversation open.
             answering = not last or last[0]["sender_id"] != person_id
             store.exec("UPDATE conversation_people SET yes_t=NULL WHERE conversation_id=?", conv["id"])
+            store.exec("UPDATE yeses SET ended_t=? WHERE conversation_id=? AND ended_t IS NULL AND revoked_t IS NULL",
+                       store.now(), conv["id"])
             store.exec("UPDATE conversations SET last_t=CASE WHEN ? THEN ? ELSE last_t END WHERE id=?",
                        answering, store.now(), conv["id"])
             # A yes this message clears is given again with it as it was: after `agree` with one_more on a full need,
             # a reply with agree=true, as the instructions say, was refused (review).
+            held = _holds_yes(mine, signature) or bool(waiting)
             outcome = (_agree(store, person_id, conv["id"], revision=_revision(store, conv["id"]),
-                              one_more=_holds_yes(mine, signature)) if agree_too
-                       else CLEARED if _holds_yes(mine, signature) else None)
-    _nudge(store, *(p["person_id"] for p in others))
+                              one_more=_holds_yes(mine, signature) or bool(waiting and waiting["one_more"]))
+                       if agree_too else CLEARED if held else None)
+    if outcome != MET:          # held back, nothing reached them
+        _nudge(store, *(p["person_id"] for p in others))
     return conv["id"], outcome
 
 
-DEAL, YES, ALREADY = "deal", "yes", "already"
-WITHDRAWN, NO_YES = "withdrawn", "no yes"
+DEAL, YES, ALREADY, WAITS = "deal", "yes", "already", "waits"
+WITHDRAWN, NO_YES, UNSHOWN = "withdrawn", "no yes", "unshown"
 # A deal made before this call: answered as a deal, and nudges nobody. A repeated `agree` on a deal nudged the
 # other side every ten minutes for as long as the conversation was kept (review).
 _DEALT = "dealt"
@@ -1520,15 +1555,12 @@ _DEALT = "dealt"
 
 def agree(store: Store, person_id: str, conversation_id: str, *, revision: int | None = None,
           one_more: bool = False) -> str:
-    """Their person said yes to this one, as it stood at `revision`, which `check` shows: DEAL when it is a deal
-    (made now, or before), YES when it waits on someone else, ALREADY when their yes was recorded before.
-    Refused when someone else has written since. `one_more`: on their own full need, room for one more deal
-    first. A deal made by this call nudges the others; nothing else here does."""
+    """Their person said yes to this one, as it stood at `revision`, which `check` shows. Nothing is released on an
+    assistant's word: WAITS when the yes waits for its person to confirm it on their yes page (recorded now, or
+    before), ALREADY when they confirmed it before, DEAL when it is already a deal. Refused when someone else has
+    written since. `one_more`: on their own full need, room for one more deal first. Only `confirmYes`, the
+    person's own press on their page, makes a deal (PROTOCOL.md §3 rule 5)."""
     outcome = _agree(store, person_id, conversation_id, revision=revision, one_more=one_more)
-    if outcome == DEAL:
-        conv = _conversation(store, person_id, _seat_ref(conversation_id)[0])
-        _nudge(store, *(p["person_id"] for p in _people(store, conv["id"])
-                        if p["dealt"] and p["person_id"] != person_id))
     return DEAL if outcome == _DEALT else outcome
 
 
@@ -1545,8 +1577,8 @@ def _as_seen(store: Store, conv, person_id: str, revision, done: str) -> None:
         raise Refused(f"a yes names the revision it was given at: `check` shows it on each conversation "
                       f"(\"revision 4\"). Pass `revision` with the number from the `check` your person's yes was "
                       f"given on. Nothing was {done}. If your tool has no `revision`, your app's list of Bridge "
-                      "tools is out of date: in ChatGPT, Settings → Apps → Bridge → Refresh; in Claude, a new "
-                      "chat. Never remove Bridge to refresh it: added again, it is a new account.")
+                      "tools is out of date: refresh Bridge's tools in your app's settings, or start a new chat. "
+                      "Never remove Bridge to refresh it: added again, it is a new account.")
     now = _revision(store, conv["id"])
     if not 0 <= revision <= now:
         raise Refused(f"that conversation has no revision {revision}: it is at {now}. Nothing was {done}.")
@@ -1579,46 +1611,295 @@ def _agree(store: Store, person_id: str, conversation_id: str, *, revision: int 
                           "`setup`: a deal hands both to the other person")
         if _holds_yes(next(p for p in people if p["person_id"] == person_id), signature):
             return ALREADY
+        waiting = _waiting(store, person_id, conv["id"], signature)
+        if waiting:
+            if one_more and not waiting["one_more"]:
+                store.exec("UPDATE yeses SET one_more=1 WHERE id=?", waiting["id"])
+            return WAITS
         for link in links:
             if link["author_id"] == person_id and not link["closed_t"]:
-                _no_race(store, conv, link["need_id"], one_more)
-        now = store.now()
+                _no_race(store, conv, link["need_id"], one_more, waiting=True)
+        # Sealed now, while this call holds the person's key: their confirming, on a page, holds no one's.
+        _hand_over(store, person_id, conv["id"], [p["person_id"] for p in inside if p["person_id"] != person_id])
+        _recordYes(store, person_id, conv, inside, people, links, one_more)
+        return WAITS
+
+
+def _makeDeal(store: Store, conv, inside: list, links: list, now: float) -> list[str]:
+    """Everyone still in it has a confirmed yes: it is a deal. Returns who is in it."""
+    dealt = [p["person_id"] for p in inside]
+    store.exec("UPDATE conversations SET deal_t=? WHERE id=?", now, conv["id"])
+    store.exec(f"UPDATE conversation_people SET dealt=1 WHERE conversation_id=? AND person_id IN "
+               f"({','.join('?' * len(dealt))})", conv["id"], *dealt)
+    # A report kept open past a deal let its owner, or the reporter through an honest owner, remove the deal
+    # partner by it and watch which unnamed needs went with them (rethink, r4_revised.py). Only this deal's
+    # own: closing every report between them showed an owner, as one vanished while a need left their list, who
+    # wrote that need (review 3). An older one between them is refused in `_person_behind`.
+    store.exec(f"UPDATE reports SET closed_t=COALESCE(closed_t, ?) WHERE conversation_id=? OR (need_id IN "
+               f"(SELECT need_id FROM conversation_needs WHERE conversation_id=?) AND reporter_id IN "
+               f"({','.join('?' * len(dealt))}))", now, conv["id"], conv["id"], *dealt)
+    # A need is full at as many deals as its author asked for: one, unless they said otherwise. A need
+    # that had found its person kept taking offers, and in the simulation the next offer was the liar's; so a
+    # full one reaches nobody new, and its author says yes on it again only with one_more. It no longer
+    # closes: that ended its other conversations, and an introduction that came to nothing left its author
+    # starting over (design review). Counted on the need: deal conversations are deleted after 90 days and a
+    # need can last a year, so counting them let a need for two take a third (review). Each need whose author
+    # is in the deal has had one.
+    for link in links:
+        if link["author_id"] in dealt and not link["closed_t"]:
+            store.exec("UPDATE needs SET deals=deals+1 WHERE id=?", link["need_id"])
+    return dealt
+
+
+# -- yeses: each waits for its person to confirm it on their yes page (PROTOCOL.md §3 rule 5) ------------------------
+# A directory review found that `agree` released a name and contact on the model's word alone. Now it records the
+# yes as waiting, and the person confirms it on a page this server hosts, which knows them only by its link.
+
+def _yesHash(link: str) -> str:
+    return _hash("yes page " + link)
+
+
+def _newLink(store: Store, person_id: str, key: bytes) -> None:
+    """A link for their yes page: the page's key locked under it, and the link sealed to them, so a call of theirs
+    can show it again."""
+    link = secrets.token_urlsafe(24)
+    store.exec("INSERT OR REPLACE INTO yes_pages(person_id, link_hash, link, page_key, key, created_t) "
+               "VALUES (?,?,?,?,?,?)", person_id, _yesHash(link), _seal_to(store, person_id, link.encode(), "yes link"),
+               vault.lock(vault.from_secret(link, "yes page"), key, "yes page key"),
+               _seal_to(store, person_id, key, "yes page"), store.now())
+
+
+def _pageKey(store: Store, person_id: str) -> bytes:
+    """The key what their yes page shows is locked under; the page is made at their first yes."""
+    row = store.one("SELECT key FROM yes_pages WHERE person_id=?", person_id)
+    if row:
+        return vault.open_sealed(vault.key(person_id), row["key"], "yes page")
+    key = vault.new_key()
+    _newLink(store, person_id, key)
+    return key
+
+
+def _moveYesPage(store: Store, person_id: str) -> None:
+    """A new link for their yes page, keeping what it shows: after `new_link`, whoever else held the old one no
+    longer gets in."""
+    row = store.one("SELECT key FROM yes_pages WHERE person_id=?", person_id)
+    if row:
+        _newLink(store, person_id, vault.open_sealed(vault.key(person_id), row["key"], "yes page"))
+
+
+def yesLink(store: Store, person_id: str) -> str | None:
+    """Their yes page's link, which only a call of theirs opens; None before their first yes."""
+    row = store.one("SELECT link FROM yes_pages WHERE person_id=?", person_id)
+    try:
+        return vault.open_sealed(vault.key(person_id), row["link"], "yes link").decode() if row else None
+    except vault.Locked:
+        return None
+
+
+def _waiting(store: Store, person_id: str, conversation_id: str, signature: str):
+    """Their yes here that waits for them to confirm it and still could: nothing written since, the same people
+    in it, within its days."""
+    return store.one("SELECT * FROM yeses WHERE person_id=? AND conversation_id=? AND confirmed_t IS NULL AND "
+                     "ended_t IS NULL AND revoked_t IS NULL AND created_t>? AND yes_in=? AND revision=? "
+                     "ORDER BY created_t DESC LIMIT 1", person_id, conversation_id, store.now() - YES_WAITS_S,
+                     signature, _revision(store, conversation_id))
+
+
+def waitingYes(store: Store, person_id: str, conversation_id: str) -> str | None:
+    """The id of their yes in that conversation that waits for them to confirm it, for the link to point at."""
+    row = store.one("SELECT id FROM yeses WHERE person_id=? AND conversation_id=? AND confirmed_t IS NULL AND "
+                    "ended_t IS NULL AND revoked_t IS NULL ORDER BY created_t DESC, rowid DESC LIMIT 1", person_id,
+                    _seat_ref(conversation_id)[0])
+    return row["id"] if row else None
+
+
+def _recordYes(store: Store, person_id: str, conv, inside: list, people: list, links: list, one_more: bool) -> str:
+    """A yes waiting for its person, with what their yes page shows of it: the needs it is on, how many are in
+    it, the last each of them wrote, and the name and contact a deal would hand over — so the person sees, outside
+    their chat, what they confirm."""
+    now, key, ckey = store.now(), _pageKey(store, person_id), _conversation_key(store, person_id, conv["id"])
+    group, seat_of = len(people) > 2, {p["person_id"]: p["seat"] for p in people}
+    started = conv["starter_id"] == person_id
+
+    def who(pid: str) -> str:
+        return "you" if pid == person_id else f"person {seat_of.get(pid, '?')}" if group else "them"
+
+    def opened(blob: str) -> str:
+        try:
+            return vault.unlock_text(ckey, blob, "message")
+        except vault.Locked:
+            return ""
+    last = {m["sender_id"]: m for m in store.all("SELECT id, sender_id, text FROM messages WHERE conversation_id=? "
+                                                 "ORDER BY id", conv["id"])}
+    row, mine = store.one("SELECT name, contact FROM people WHERE id=?", person_id), _self(person_id)
+    shown = {"needs": [{"by": who(link["author_id"]), "text": _text_in(link, ckey),
+                        "community": _community_name_for(store, person_id, link["via"])
+                        if not group or started or link["author_id"] == person_id else ""} for link in links],
+             "people": len(inside), "revision": _revision(store, conv["id"]),
+             "last": [{"from": who(m["sender_id"]), "text": opened(m["text"])}
+                      for m in sorted(last.values(), key=lambda m: m["id"])],
+             "name": vault.unlock_text(mine, row["name"], "name"),
+             "contact": vault.unlock_text(mine, row["contact"], "contact")}
+    yes_id = _new_id(store, "yeses", "y")
+    store.exec("INSERT INTO yeses(id, person_id, conversation_id, revision, yes_in, one_more, shown, created_t) "
+               "VALUES (?,?,?,?,?,?,?,?)", yes_id, person_id, conv["id"], shown["revision"], _signature(inside),
+               int(one_more), vault.lock_text(key, json.dumps(shown), "yes shown"), now)
+    return yes_id
+
+
+# What a yes on its person's page is now.
+Y_WAITS, Y_COUNTS, Y_DEAL, Y_UNSHOWN, Y_TAKEN_BACK = "waits", "counts", "deal", "unshown", "taken back"
+Y_CHANGED, Y_LEFT, Y_OUT, Y_OVER, Y_EXPIRED, NO_PLACE = "changed", "left", "out", "over", "expired", "no place"
+
+
+def _yesState(store: Store, yes) -> str:
+    conv = store.one("SELECT * FROM conversations WHERE id=?", yes["conversation_id"])
+    mine = conv and store.one("SELECT * FROM conversation_people WHERE conversation_id=? AND person_id=?", conv["id"],
+                              yes["person_id"])
+    if not conv or not mine:
+        return Y_OVER
+    made_deal = bool(conv["deal_t"] and mine["dealt"] and yes["confirmed_t"] and not yes["ended_t"])
+    if yes["revoked_t"]:
+        return Y_UNSHOWN if made_deal else Y_TAKEN_BACK
+    if made_deal:
+        return Y_DEAL
+    inside = _in(store, conv)
+    if conv["deal_t"] or yes["person_id"] not in {p["person_id"] for p in inside}:
+        # Out of it before any deal: shown nothing of what came after, as `check` shows nothing (rule 2). Before
+        # `ended_t`, which the others' messages set: a page that turned from out to changed told someone gone that
+        # the rest were still writing (independent review).
+        return Y_OUT
+    if yes["ended_t"]:
+        return Y_CHANGED
+    if _over(store, conv):
+        return Y_OVER
+    if _signature(inside) != yes["yes_in"]:
+        return Y_LEFT
+    if _revision(store, conv["id"]) != yes["revision"]:
+        return Y_CHANGED
+    if yes["confirmed_t"]:
+        return Y_COUNTS
+    return Y_EXPIRED if yes["created_t"] + YES_WAITS_S <= store.now() else Y_WAITS
+
+
+def _pagePerson(store: Store, link: str) -> str:
+    row = store.one("SELECT person_id FROM yes_pages WHERE link_hash=?", _yesHash(link or ""))
+    if not row:
+        raise NotYours()
+    return row["person_id"]
+
+
+def confirmYes(store: Store, link: str, yes_id: str) -> str:
+    """Its person's own press on their yes page: what makes a yes count. YES when it waits on the others, DEAL when
+    it completes everyone's (the others are nudged), ALREADY when it counted before; otherwise what the yes is now
+    (Y_…), or NO_PLACE when the person's own need has no place left for it, and nothing changes."""
+    with store.transaction():
+        person_id = _pagePerson(store, link)
+        _acting(store, person_id)
+        yes = store.one("SELECT * FROM yeses WHERE id=? AND person_id=?", _ref(yes_id), person_id)
+        if not yes:
+            raise NotYours()
+        state = _yesState(store, yes)
+        if state != Y_WAITS:
+            return {Y_COUNTS: ALREADY, Y_DEAL: DEAL}.get(state, state)
+        conv = store.one("SELECT * FROM conversations WHERE id=?", yes["conversation_id"])
+        people, links = _people(store, conv["id"]), _links(store, conv["id"])
+        inside = _in(store, conv, people, links)
+        try:
+            for need in links:
+                if need["author_id"] == person_id and not need["closed_t"]:
+                    _no_race(store, conv, need["need_id"], bool(yes["one_more"]))
+        except Refused:
+            return NO_PLACE
+        now, signature = store.now(), yes["yes_in"]
         store.exec("UPDATE conversation_people SET yes_t=?, yes_in=? WHERE conversation_id=? AND person_id=?", now,
                    signature, conv["id"], person_id)
-        _hand_over(store, person_id, conv["id"], [p["person_id"] for p in inside if p["person_id"] != person_id])
+        store.exec("UPDATE yeses SET confirmed_t=? WHERE id=?", now, yes["id"])
         if not all(_holds_yes(p, signature) for p in inside if p["person_id"] != person_id):
             return YES
-        dealt = [p["person_id"] for p in inside]
-        store.exec("UPDATE conversations SET deal_t=? WHERE id=?", now, conv["id"])
-        store.exec(f"UPDATE conversation_people SET dealt=1 WHERE conversation_id=? AND person_id IN "
-                   f"({','.join('?' * len(dealt))})", conv["id"], *dealt)
-        # A report kept open past a deal let its owner, or the reporter through an honest owner, remove the deal
-        # partner by it and watch which anonymous needs went with them (rethink, r4_revised.py). Only this deal's
-        # own: closing every report between them showed an owner, as one vanished while a need left their list, who
-        # wrote that need (review 3). An older one between them is refused in `_person_behind`.
-        store.exec(f"UPDATE reports SET closed_t=COALESCE(closed_t, ?) WHERE conversation_id=? OR (need_id IN "
-                   f"(SELECT need_id FROM conversation_needs WHERE conversation_id=?) AND reporter_id IN "
-                   f"({','.join('?' * len(dealt))}))", now, conv["id"], conv["id"], *dealt)
-        # A need is full at as many deals as its author asked for: one, unless they said otherwise. A need
-        # that had found its person kept taking offers, and in the simulation the next offer was the liar's; so a
-        # full one reaches nobody new, and its author says yes on it again only with one_more. It no longer
-        # closes: that ended its other conversations, and an introduction that came to nothing left its author
-        # starting over (design review). Counted on the need: deal conversations are deleted after 90 days and a
-        # need can last a year, so counting them let a need for two take a third (review). Each need whose author
-        # is in the deal has had one.
-        for link in links:
-            if link["author_id"] in dealt and not link["closed_t"]:
-                store.exec("UPDATE needs SET deals=deals+1 WHERE id=?", link["need_id"])
-        return DEAL
+        dealt = _makeDeal(store, conv, inside, links, now)
+    _nudge(store, *(pid for pid in dealt if pid != person_id))
+    return DEAL
 
 
-def _no_race(store: Store, conv, need_id: str, one_more: bool = False) -> None:
+def _takeBack(store: Store, person_id: str, conv) -> str:
+    """Their yes here, waiting or confirmed, taken back before a deal (WITHDRAWN); after a deal they are in, what it
+    shows them and of them, from now on (UNSHOWN); NO_YES when there was nothing to take back. Nobody else was shown
+    the yes, so nobody is shown that it went; a deal partner sees only that the name and contact are no longer
+    shown, as after a deletion."""
+    now = store.now()
+    if conv["deal_t"]:
+        # Each side's own, whatever the other did: once one side took it back, nothing was left for the other's to
+        # remove, and their page kept offering it (independent review).
+        shown = store.exec("DELETE FROM reveals WHERE conversation_id=? AND (from_id=? OR to_id=?)", conv["id"],
+                           person_id, person_id).rowcount
+        mine = store.exec("UPDATE yeses SET revoked_t=? WHERE person_id=? AND conversation_id=? AND confirmed_t IS "
+                          "NOT NULL AND ended_t IS NULL AND revoked_t IS NULL", now, person_id, conv["id"]).rowcount
+        return UNSHOWN if shown or mine else NO_YES
+    mine = store.one("SELECT yes_t FROM conversation_people WHERE conversation_id=? AND person_id=?", conv["id"],
+                     person_id)
+    # Only what could still count: one from before that stopped counting keeps saying why.
+    live = [y["id"] for y in store.all("SELECT * FROM yeses WHERE person_id=? AND conversation_id=? AND ended_t IS "
+                                       "NULL AND revoked_t IS NULL", person_id, conv["id"])
+            if _yesState(store, y) in (Y_WAITS, Y_COUNTS, Y_EXPIRED)]
+    if not mine["yes_t"] and not live:
+        return NO_YES
+    store.exec("UPDATE conversation_people SET yes_t=NULL WHERE conversation_id=? AND person_id=?", conv["id"],
+               person_id)
+    store.exec("DELETE FROM reveals WHERE conversation_id=? AND from_id=?", conv["id"], person_id)
+    for yes_id in live:
+        store.exec("UPDATE yeses SET revoked_t=? WHERE id=?", now, yes_id)
+    return WITHDRAWN
+
+
+def revokeYes(store: Store, link: str, yes_id: str) -> str:
+    """Taking a yes back on its person's page, as `withdraw` does: WITHDRAWN, UNSHOWN, or NO_YES for one that no
+    longer holds anything to take back."""
+    with store.transaction():
+        person_id = _pagePerson(store, link)
+        _acting(store, person_id)
+        yes = store.one("SELECT * FROM yeses WHERE id=? AND person_id=?", _ref(yes_id), person_id)
+        if not yes:
+            raise NotYours()
+        if _yesState(store, yes) not in (Y_WAITS, Y_COUNTS, Y_EXPIRED, Y_DEAL):
+            return NO_YES
+        return _takeBack(store, person_id, store.one("SELECT * FROM conversations WHERE id=?",
+                                                     yes["conversation_id"]))
+
+
+def yesPage(store: Store, link: str) -> list[dict] | None:
+    """Everything a yes page shows, opened with its link alone: each yes its person gave, newest first, what it is
+    now, and what they were shown of it. None for a link that is not one."""
+    row = store.one("SELECT y.* FROM yes_pages y JOIN people p ON p.id=y.person_id AND p.deleted_t IS NULL "
+                    "WHERE y.link_hash=?", _yesHash(link or ""))
+    if not row:
+        return None
+    try:
+        key = vault.unlock(vault.from_secret(link, "yes page"), row["page_key"], "yes page key")
+    except vault.Locked:
+        return None
+    out = []
+    with store.transaction():               # one moment: a yes read apart from its conversation could be both
+        for yes in store.all("SELECT * FROM yeses WHERE person_id=? ORDER BY created_t DESC, rowid DESC",
+                             row["person_id"]):
+            try:
+                shown = json.loads(vault.unlock_text(key, yes["shown"], "yes shown") or "{}")
+            except (vault.Locked, ValueError):
+                shown = {}
+            out.append({"id": yes["id"], "state": _yesState(store, yes), "created_t": yes["created_t"],
+                        "until_t": yes["created_t"] + YES_WAITS_S, "shown": shown})
+    return out
+
+
+def _no_race(store: Store, conv, need_id: str, one_more: bool = False, waiting: bool = False) -> None:
     """An author's open yeses on a need may not outnumber its places left. An assistant said yes to both
     replies to a need for one sitter, and whichever answered first — the adversary — got the deal (replay).
     Only the author's own yeses are counted, so the refusal tells them nothing about anyone else. `one_more`
     gives a full need one place for this yes and changes nothing else: the need stays full, since one that came
     back into view would tell its readers it had filled, and so that its author had made a deal (rule 2); and on
-    a need with places left it is nothing, so it is never a way round a race."""
+    a need with places left it is nothing, so it is never a way round a race. `waiting`: at `agree`, a yes still
+    waiting for its person counts too, so two never wait to race each other; at the person's confirming, only the
+    ones they confirmed do."""
     need = store.one("SELECT wants, deals, author_id FROM needs WHERE id=?", need_id)
     if not need["wants"]:
         return
@@ -1634,6 +1915,13 @@ def _no_race(store: Store, conv, need_id: str, one_more: bool = False) -> None:
                        "AND p.person_id=? WHERE c.id<>? AND p.yes_t IS NOT NULL AND c.deal_t IS NULL ORDER BY p.yes_t",
                        need_id, need["author_id"], conv["id"]):
         if not _over(store, c) and _holds_yes(c, _signature(_in(store, c))):
+            held.append(c["id"])
+    for c in store.all("SELECT DISTINCT c.* FROM conversations c JOIN conversation_needs cn ON cn.conversation_id=c.id "
+                       "AND cn.need_id=? JOIN yeses y ON y.conversation_id=c.id AND y.person_id=? WHERE c.id<>? AND "
+                       "c.deal_t IS NULL AND y.confirmed_t IS NULL AND y.ended_t IS NULL AND y.revoked_t IS NULL AND "
+                       "y.created_t>?", need_id, need["author_id"], conv["id"], store.now() - YES_WAITS_S) \
+            if waiting else []:
+        if c["id"] not in held and not _over(store, c):
             held.append(c["id"])
     places = max(need["wants"] - need["deals"], 1 if one_more else 0)
     if len(held) >= places:
@@ -1662,7 +1950,7 @@ def report(store: Store, person_id: str, ref: str) -> str:
         if ref.startswith("n-"):
             need, community = _in_front(store, ref, person_id, "that need is no longer in front of your person")
             # A need for two stays open after its first deal, and a report of it made then let the one who dealt
-            # watch which anonymous needs went when the owner removed its author (review).
+            # watch which unnamed needs went when the owner removed its author (review).
             if _dealt_on(store, person_id, ref):
                 raise Refused(f"your person has a deal on that need, which cannot be reported: {_AFTER_A_DEAL}")
             reported, need_id, conv_id, seat = need["author_id"], ref, "", 0
@@ -1689,7 +1977,7 @@ def report(store: Store, person_id: str, ref: str) -> str:
                      person_id, store.now() - 86400)["n"] >= REPORTS_PER_DAY:
             raise Refused(f"that is {REPORTS_PER_DAY} reports in a day; the rest can wait until tomorrow")
         # Someone who made a deal with the reported side knows their name, and a removal by the report would show
-        # them which anonymous needs were theirs (review 2).
+        # them which unnamed needs were theirs (review 2).
         delivered = (owner != reported and is_member(store, owner, community)
                      and not _dealt(store, person_id, reported))
         # The owner reads a reported conversation with its key, sealed to them by the reporter, who holds it.
@@ -1746,26 +2034,18 @@ def _reported(store: Store, owner_id: str, community_id: str) -> list[dict]:
 
 
 def withdraw(store: Store, person_id: str, conversation_id: str) -> str:
-    """Take back their person's yes before it is a deal. Nobody else was shown the yes, so nobody is shown that it
-    went either."""
+    """Take back their person's yes, waiting or confirmed, before it is a deal (WITHDRAWN), or after a deal stop it
+    showing them and of them (UNSHOWN): what anyone already saw stays seen. NO_YES when there was nothing."""
     with store.transaction():
         _acting(store, person_id)
         conv = _conversation(store, person_id, _seat_ref(conversation_id)[0])
         if _left_before_the_deal(store, conv, person_id):
             raise Refused(_GONE_FROM)
-        if conv["deal_t"]:
-            raise Refused("that one is already a deal; a deal cannot be taken back, and nothing more goes through "
-                          "Bridge: your person settles it with them directly, on their contact")
-        mine = store.one("SELECT yes_t FROM conversation_people WHERE conversation_id=? AND person_id=?", conv["id"],
-                         person_id)
-        if not mine["yes_t"]:
-            return NO_YES
-        if _over(store, conv):
+        if not conv["deal_t"] and _over(store, conv) and (
+                store.one("SELECT yes_t FROM conversation_people WHERE conversation_id=? AND person_id=?", conv["id"],
+                          person_id)["yes_t"]):
             raise Refused("that conversation is over; there is nothing to take back")
-        store.exec("UPDATE conversation_people SET yes_t=NULL WHERE conversation_id=? AND person_id=?", conv["id"],
-                   person_id)
-        store.exec("DELETE FROM reveals WHERE conversation_id=? AND from_id=?", conv["id"], person_id)
-        return WITHDRAWN
+        return _takeBack(store, person_id, conv)
 
 
 def pass_on(store: Store, person_id: str, ref: str) -> str:
@@ -1889,6 +2169,8 @@ def inbox(store: Store, person_id: str, *, passed: bool = False, needs_from: str
             item["shown_until"] = conv["deal_t"] + DEAL_SHOWN_S
         else:
             item["over"] = _over(store, conv)
+            # Their yes waiting for them on their yes page: nothing is released until they confirm it there.
+            item["yes_waits"] = not item["over"] and bool(_waiting(store, person_id, conv["id"], _signature(inside)))
             if mine_by:
                 need = store.one("SELECT closed_t, wants, deals FROM needs WHERE id=?", mine_by[0]["need_id"])
                 # "OVER — they moved on" was false when the author's own need had closed (simulation).
@@ -1961,6 +2243,7 @@ def inbox(store: Store, person_id: str, *, passed: bool = False, needs_from: str
                     for r in _reported(store, person_id, c["id"])]
     return {"me": me(store, person_id), "conversations": conversations, "reached": reached, "more": more, "mine": mine,
             "passed": passed, "reports": reports, "page": bool(needs_from),
+            "yes_link": None if needs_from else yesLink(store, person_id),
             "next": page[NEEDS_SHOWN]["id"] if len(page) > NEEDS_SHOWN else None}
 
 
@@ -1981,7 +2264,7 @@ def sweep(store: Store) -> None:
             QUIET_TTL_S, cutoff)]
         for table, column in (("messages", "conversation_id"), ("conversation_needs", "conversation_id"),
                               ("conversation_people", "conversation_id"), ("reveals", "conversation_id"),
-                              ("conversations", "id")):
+                              ("yeses", "conversation_id"), ("conversations", "id")):
             for i in range(0, len(ended), 500):
                 chunk = ended[i:i + 500]
                 store.exec(f"DELETE FROM {table} WHERE {column} IN ({','.join('?' * len(chunk))})", *chunk)

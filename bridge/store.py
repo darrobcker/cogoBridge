@@ -14,7 +14,7 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 
 # Sign-in (OAuth, PROTOCOL.md §5).
 SIGN_IN = """
@@ -79,6 +79,33 @@ CREATE INDEX conversation_needs_by_need ON conversation_needs(need_id);
 CREATE INDEX conversation_people_by_person ON conversation_people(person_id);
 ALTER TABLE reports ADD COLUMN seat INTEGER NOT NULL DEFAULT 0;
 PRAGMA user_version=8;
+COMMIT;
+""",
+    # 9 → 10: a yes counts only once its person confirms it on their yes page. One recorded on an assistant's word
+    # alone, before any deal, no longer counts, and what it sealed for the others goes: each is asked for again.
+    9: """
+BEGIN;
+-- A person's yes page (PROTOCOL.md §3 rule 5): where they confirm each yes `agree` records, and see and take back
+-- every one. Found by `link_hash`; `link` is the link's secret sealed to them, so a call of theirs can show it again.
+-- `key` locks what the page shows: locked under the link (`page_key`), and sealed to them (`key`).
+CREATE TABLE yes_pages (
+  person_id TEXT PRIMARY KEY, link_hash TEXT NOT NULL UNIQUE, link TEXT NOT NULL, page_key TEXT NOT NULL,
+  key TEXT NOT NULL, created_t REAL NOT NULL
+);
+-- Each yes `agree` recorded. It counts (`conversation_people.yes_t`) only once its person confirms it on their yes
+-- page (`confirmed_t`). `yes_in`: who was in the conversation when it was given, as `conversation_people.yes_in`.
+-- `ended_t`: a message cleared it; `revoked_t`: its person took it back. `shown`: what the page shows of it, locked
+-- under the page's key.
+CREATE TABLE yeses (
+  id TEXT PRIMARY KEY, person_id TEXT NOT NULL, conversation_id TEXT NOT NULL, revision INTEGER NOT NULL,
+  yes_in TEXT NOT NULL, one_more INTEGER NOT NULL DEFAULT 0, shown TEXT NOT NULL DEFAULT '', created_t REAL NOT NULL,
+  confirmed_t REAL, ended_t REAL, revoked_t REAL
+);
+CREATE INDEX yeses_by_person ON yeses(person_id, created_t);
+CREATE INDEX yeses_by_conversation ON yeses(conversation_id);
+UPDATE conversation_people SET yes_t=NULL WHERE conversation_id IN (SELECT id FROM conversations WHERE deal_t IS NULL);
+DELETE FROM reveals WHERE conversation_id IN (SELECT id FROM conversations WHERE deal_t IS NULL);
+PRAGMA user_version=10;
 COMMIT;
 """,
 }
@@ -187,6 +214,24 @@ CREATE TABLE reports (
 );
 CREATE INDEX reports_by_community ON reports(community_id, closed_t);
 CREATE INDEX reports_by_reporter ON reports(reporter_id, t);
+-- A person's yes page (PROTOCOL.md §3 rule 5): where they confirm each yes `agree` records, and see and take back
+-- every one. Found by `link_hash`; `link` is the link's secret sealed to them, so a call of theirs can show it again.
+-- `key` locks what the page shows: locked under the link (`page_key`), and sealed to them (`key`).
+CREATE TABLE yes_pages (
+  person_id TEXT PRIMARY KEY, link_hash TEXT NOT NULL UNIQUE, link TEXT NOT NULL, page_key TEXT NOT NULL,
+  key TEXT NOT NULL, created_t REAL NOT NULL
+);
+-- Each yes `agree` recorded. It counts (`conversation_people.yes_t`) only once its person confirms it on their yes
+-- page (`confirmed_t`). `yes_in`: who was in the conversation when it was given, as `conversation_people.yes_in`.
+-- `ended_t`: a message cleared it; `revoked_t`: its person took it back. `shown`: what the page shows of it, locked
+-- under the page's key.
+CREATE TABLE yeses (
+  id TEXT PRIMARY KEY, person_id TEXT NOT NULL, conversation_id TEXT NOT NULL, revision INTEGER NOT NULL,
+  yes_in TEXT NOT NULL, one_more INTEGER NOT NULL DEFAULT 0, shown TEXT NOT NULL DEFAULT '', created_t REAL NOT NULL,
+  confirmed_t REAL, ended_t REAL, revoked_t REAL
+);
+CREATE INDEX yeses_by_person ON yeses(person_id, created_t);
+CREATE INDEX yeses_by_conversation ON yeses(conversation_id);
 -- One row per tool call: who, which tool, when. No arguments, no text. And one per Join press on an invite
 -- page: person '', tool "join-page <ai> <community id>".
 CREATE TABLE calls (t REAL NOT NULL, person_id TEXT NOT NULL, tool TEXT NOT NULL);

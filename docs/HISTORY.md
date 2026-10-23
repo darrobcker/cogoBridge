@@ -63,21 +63,21 @@ The current design, with two things since removed:
 - **Showing yourself (`show`).** A person could put their own name, or name and contact, on one need or
   reply. Nobody used it live. In the situations study 3 of 200 situations needed it and 36 were made worse;
   assistants set it wrongly 59 times in 150; the impersonator took 5 of 15 adversary deals with it; and a
-  shown name next to anything anonymous of the same person named that too, so the pair rule and the guard
+  shown name next to anything unnamed of the same person named that too, so the pair rule and the guard
   each needed an exception for it. A business can still put its public name in its need, unless that name
   shares a word with its writer's own setup name. Trigger: real needs refused, more than once, for a name
   their writer wanted known.
 - **One live conversation per pair (a revival, then dropped).** The first cut let two people hold two
   conversations and told the assistants to drop one; each side dropped a different one and the match was
   lost. The rule that replaced it refused a second conversation and hid a need from someone its author was
-  already talking with. Both tied two anonymous things to one author, and the hidden need came back at the
+  already talking with. Both tied two unnamed things to one author, and the hidden need came back at the
   deal (the rethink's author-swap scripts). Now both conversations stay and the assistants are told to keep
   both until a deal, which cannot lose the match that way; at worst the two make a second deal. Trigger: a
   real pair who lost a match by dropping both of two conversations.
 - **The facts line.** Each conversation said how many other needs the counterpart was answering: no, 1-2,
   3 or more. Iteration 2 credited it, but the hidden yes changed at the same time; the simulated voices
   triaged it "no change needed"; the replays measured one fluent-liar deal in five, on one moment. It added
-  up one person's other conversations, which rule 7 now forbids, and linked two anonymous things of one
+  up one person's other conversations, which rule 7 now forbids, and linked two unnamed things of one
   person once a counterpart walked away. Trigger: a real report about someone who fit every need.
 - **Undoing a removal (`restore`), and the owner's count of removals.** Never used. Both told an owner
   whether two things had one author: a second removal of someone already removed did not move the count,
@@ -123,3 +123,16 @@ What ChatGPT, Claude and Gemini allow a connector to do was last checked against
 2026-09-29 and is in [HOSTS.md](HOSTS.md). The facts the design leans on: only ChatGPT lets a server wake a
 chat, and only one that subscribed; no host proves to a server that a human approved anything; inference runs on
 the user's own plan.
+
+## A yes given in advance, and tools called unasked (dropped 2026-10-22)
+
+`agree` recorded the person's yes on the assistant's word, and the instructions allowed a yes given in advance ("if
+you find X, say yes for me"), with limits (never children, a home, money, health, meeting alone). They also told
+assistants to `check` at the start of each chat, to say nothing on a scheduled run their person was not there for,
+to suggest needs at first use, and to keep ids and tool names from their person; and a scheduled-task line asked the
+assistant to reply, pass and agree while its person was away. Anthropic's directory review asked that tools act only
+on the person's request and that a name and contact never leave on the model's word. Now `agree` records a yes as
+waiting and the person confirms it on their yes page (PROTOCOL.md §3 rule 5), and the lines a person can set up to
+hear back say "Don't reply or agree without me". Yeses recorded before the change, on no deal yet, were cleared by
+the move to schema 10, and are asked for again.
+

@@ -67,11 +67,19 @@ did. `SELECT COUNT(*) FROM escrow` shows how many are still waiting. Backups tak
 written then in the clear until they age out with the rest; the one the deploy takes just before it is the way
 back to schema 8, since code from before refuses a database at 9.
 
+## Yeses
+
+A yes counts only once its person confirms it on their yes page (PROTOCOL.md §3 rule 5). The move to schema 10
+clears every yes recorded before any deal, since each was an assistant's word alone, and what it sealed for the
+others: those assistants are told to ask again, and their people confirm on the page. Deals already made are
+untouched. The backup the deploy takes just before it is the way back to schema 9.
+
 ## A theme
 
 `BRIDGE_THEME` names a directory whose `templates/` are found before the server's own and whose `static/` is
 served at `/static`: a server's own look, kept out of this repository. A theme replaces `base.html` (the frame:
-fonts, colours, images) and may replace `home.html`; the other pages' words, which say who can read what before
+fonts, colours, images), may replace `home.html`, and gives `docs.html`, served at `/docs`, which a server without
+one does not have; the other pages' words, which say who can read what before
 anyone presses a button, stay the server's own. A `favicon.ico` in its `static/` replaces the server's.
 
 ## Restoring from a backup

@@ -60,10 +60,25 @@ def seen(store, conversation: str) -> int:
     return net._revision(store, net._ref(conversation))
 
 
-def agree(store, person: str, conversation: str, **kwargs) -> str:
-    """`net.agree` as an assistant calls it straight after reading the conversation."""
+def agree(store, person: str, conversation: str, *, confirm: bool = True, **kwargs) -> str:
+    """`net.agree` as an assistant calls it straight after reading the conversation, and then, unless `confirm` is
+    false, the person's own press on their yes page, which is what makes the yes count (PROTOCOL.md §3 rule 5)."""
     kwargs.setdefault("revision", seen(store, conversation))
-    return net.agree(store, person, conversation, **kwargs)
+    outcome = net.agree(store, person, conversation, **kwargs)
+    return confirm_yes(store, person, conversation) if outcome == net.WAITS and confirm else outcome
+
+
+def confirm_yes(store, person: str, conversation: str) -> str:
+    """The person presses Confirm on their yes page, for their yes waiting in that conversation."""
+    return net.confirmYes(store, net.yesLink(store, person), net.waitingYes(store, person, conversation))
+
+
+def reply_yes(store, person: str, to: str, text: str, **kwargs) -> tuple[str, str | None]:
+    """`net.reply` with agree=true, and then the person's confirming of the yes it recorded."""
+    conversation, outcome = net.reply(store, person, to, text, agree_too=True, **kwargs)
+    if net.waitingYes(store, person, conversation):
+        confirm_yes(store, person, conversation)
+    return conversation, outcome
 
 
 class World:

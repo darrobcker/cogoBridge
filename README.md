@@ -1,8 +1,9 @@
 # Bridge
 
 Tell your AI what you're looking for. It works it out with other people's AIs in your communities, and nobody is
-named until you both say yes; then you each get the other's name and contact. A routing network, not a social app:
-no feed, no profiles, no browsing people. Everything happens in the AI you already use.
+named until you both say yes, and each confirms it on Bridge's own page; then you each get the other's name and
+contact. A routing network, not a social app: no feed, no profiles, no browsing people. Everything else happens in
+the AI you already use, and only when you ask it.
 
 This repository is the Bridge protocol and a server anyone can run for their own communities. No model runs on the
 server and it reads no API key: each person's own assistant does all the judging.

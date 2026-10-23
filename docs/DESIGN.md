@@ -37,9 +37,24 @@ the thing the benchmark showed does not work — back in charge of who gets to j
 used for nothing else. The cost is that `check` in a busy community lists twenty needs and says how many
 more there are; the assistant passes what does not fit.
 
-**The person's yes can be given in advance.** "If you find a climbing partner in East London, say yes for
-me" is a yes. The assistant acts on it and reports what it agreed to. The server cannot tell a standing yes
-from a fresh one, or either from an assistant inventing one; that is the bet the whole design makes.
+**A yes is confirmed by its person, on a page the server hosts.** `agree` records a yes as waiting and returns a
+link to the person's yes page; their name and contact go to anyone only once they press Confirm there, and only
+once everyone in the conversation has. Before, a yes could be given in advance ("if you find a climbing partner,
+say yes for me"), and the assistant's word was the whole of it: the server could not tell a standing yes from a
+fresh one, or either from an assistant inventing one, or one told to by text it read. Anthropic's directory review
+asked that a name and contact never leave on the model's word. The page is the one step a person takes outside their
+chat, because a name and contact leave there and nowhere else: it shows, from the server and not from the model, what
+the conversation held and what a deal would hand over, and lists every yes they gave, to take any back. It knows its
+person only by its link. It proves less than it seems: whoever holds the link can press it, an assistant driving a
+browser included, and the instructions only ask an assistant not to. What it does buy is that an assistant that is
+wrong, or misled by what it read, cannot introduce its person by itself.
+
+**Tools act when their person asks.** `check` when they ask what is waiting, `go` when they ask to post, the rest
+when they ask for what each does. The instructions used to tell an assistant to `check` at the start of every
+chat, say nothing on a run its person was not there for, suggest needs unasked, and keep tool names and ids from
+its person; the directory review found each of those an assistant acting without being asked, and they went. A
+person who wants to hear without asking sets it up themselves: a nudge, a scheduled task in their own words, or, in
+ChatGPT, asking it to watch Bridge.
 
 **Nobody is named until both say yes.** This is what makes "go" cheap to say: a need can reach a
 thousand assistants without its author being exposed to anyone, and a no costs nobody anything because it
@@ -48,7 +63,7 @@ is never attached to a name. It is also what makes lying cheap — see §4.
 **Each thing stands alone.** Before a deal, what a member is shown about a need or a conversation, and how
 any operation on it answers them, depends only on that thing and on the member's own memberships and acts,
 never on who is behind anything else. Three earlier features broke this, each caught by swapping who wrote
-one anonymous need and comparing what the others saw: a person could show their own name on a need or reply
+one unnamed need and comparing what the others saw: a person could show their own name on a need or reply
 (and an impersonator took 5 of 15 adversary deals with it); two people could hold only one live conversation,
 so a need vanished while its author talked to the reader and came back at the deal; and each conversation
 counted how many other needs the counterpart answered, which added up one person's other conversations. All
@@ -101,11 +116,12 @@ what a person receives across all their conversations would have to be told to t
 would tell them about that person's other conversations (rule 7), so that budget is the reader's own
 assistant's, with the nudge at most every ten minutes. Nothing here scores, ranks or rewards volume.
 
-**Everything happens in the chat.** The only web pages send someone from an invite link to add Bridge to
-their AI, and ask for one press of Allow when their app signs in. An earlier version put a human click on a web
-page at every step, reasoning that only a click proves a person decided. No host can prove that either way, the
-pages multiplied, and the product stopped being "tell your AI". The person's yes to their own assistant is the
-consent; the protocol says plainly that the server cannot verify it.
+**Everything happens in the chat, but the yes.** The web pages send someone from an invite link to add Bridge to
+their AI, ask for one press of Allow when their app signs in, and, at a yes, ask for one press of Confirm. An
+earlier version put a human click on a web page at every step, reasoning that only a click proves a person decided.
+No host can prove that either way, the pages multiplied, and the product stopped being "tell your AI". So there is
+one click, where it matters most: where a name and contact leave. The protocol says plainly that the server cannot
+tell a person's click from anyone else's.
 
 **One door: a person exists only once their own AI calls.** Everyone adds the same address, and their app signs in
 (OAuth); the Allow page asks for nothing — no email, no password, no name — so the connection the app holds is the
@@ -129,7 +145,7 @@ a need sent there, a conversation of their own through it, or a report: the only
 member. The removed person's needs stop, their conversations through that community end as if they had
 walked away, and the link no longer admits that account. Removal is refused wherever a deal could aim it
 (PROTOCOL §4): otherwise someone who learned a name in a deal could remove that person and watch which
-anonymous needs went with them. Every
+unnamed needs went with them. Every
 member, and the invite page, is told whether fewer than ten people have ever joined (`small`), because there
 a need is nearly signed: with the owner and one friend, the owner knows every need not theirs is the
 friend's, and now the friend's assistant knows it too. It covers two friends and a whole campus with one mechanism.
@@ -137,7 +153,7 @@ friend's, and now the friend's assistant knows it too. It covers two friends and
 **The text guard looks only at its writer.** Before a deal, the server refuses text containing the
 writer's own name or contact, or anything shaped like a contact. An earlier guard checked every member's
 name. An audit showed that made it an oracle — a refusal confirmed a named person was a member, and could
-unmask the anonymous author of a need sent to several communities — and that it let one member make words
+unmask the unnamed author of a need sent to several communities — and that it let one member make words
 unsayable for everyone and freeze the server at a few thousand members. Looking only at the writer removes
 all of that, and costs nothing as a community grows.
 
@@ -164,7 +180,7 @@ machinery, only framing. Negotiation is asynchronous, like email.
 the person first, longest waiting first — then needs, then the person's own, under one character budget, and
 says how many did not fit. A deal that does not fit whole still shows short, with the name and contact, since
 the other side already has theirs, and deals always leave reports room, up to half the budget. Deals too are
-counted once even their short forms overflow: an offer with a yes in advance can pile them up, one answered
+counted once even their short forms overflow: an offer for as many as come can pile them up, one answered
 conversation each, and the newest then wait for the oldest to leave. Seven accounts through one invite link,
 each writing twelve messages of 2000 characters, pushed an owner's reports and a genuine reply past 150,000
 characters, about Claude's limit on a tool's answer; a cap of twenty conversations would not stop that, since
@@ -271,7 +287,7 @@ that the defences move the numbers. It does not show that real people want this.
 
 **First real use** (2026-09-21). Two friends, one need, one deal: first reply 4.6 minutes after the need
 went out, deal at 22.5 minutes, six messages, no errors, contacts exchanged. Both were online and nudged
-each other by text, so the timing is a best case; with two members nobody was anonymous; and they already
+each other by text, so the timing is a best case; with two members nobody was unnamed in effect; and they already
 knew each other, so it says nothing yet about finding what people would otherwise have missed.
 
 **The swarm** (2026-09-22). Sixteen simulated people in three overlapping communities, each with a messy
@@ -300,7 +316,7 @@ against the running code, every finding reproduced before it was fixed. The wors
 membership oracle and an author-unmasking tool; five angle brackets escaped the data fence; a person's
 name survived their own deletion in the other side's messages; a former member could still reply to needs
 routed before they left; pressing Join twice silently broke the connector an assistant already held. A
-review of the swarm fixes found an owner could "remove" from their community the anonymous person they were
+review of the swarm fixes found an owner could "remove" from their community the unnamed person they were
 talking to in another one, and learn from the answer whether that person was a member — now a conversation
 records the community it came through, and an owner can act on it only there. Their reproductions are
 tests in `tests/test_net.py`; the docstrings say what went wrong.
@@ -326,15 +342,15 @@ a choir needing two tenors, a baker and a lost-dog owner who wanted to be named,
 offer for anyone, a new mother who must stay unknown, an employee hiding a job search from the manager who
 owns his work community, and an adversary who named itself "Omar's Bakery" and pressed everyone to show
 themselves. Three right deals (both tenors, the flour), none for the adversary, and nobody shown who had
-not chosen it; the mother's peer support ran anonymously with no deal, as she wanted, and she dropped the
+not chosen it; the mother's peer support ran unnamed with no deal, as she wanted, and she dropped the
 conversation that asked for her name. What it found, each now a test: the baker's own name was refused
 in the conversation his named need had started; the choir said yes without a word and the tenor, never
 shown it, waited — so did the choir; a member who passed the lost-dog alert and then saw the dog could not
 find it again; a tenor's assistant took the adversary's shown name for Omar; one assistant showed a
 contact when told only "tell them who I am"; and the employee's assistant, told to start a smaller
 community, posted into a new one with nobody else in it. An independent review of the change then found
-that rule 7 (one conversation per pair) and a shown name together named anonymous sides — a baker's named
-need vanished for exactly the person she was talking to anonymously — that showing a contact let another
+that rule 7 (one conversation per pair) and a shown name together named unnamed sides — a baker's named
+need vanished for exactly the person she was talking to unnamed — that showing a contact let another
 address through the guard, and that a year-long need for two could take a third deal once the first
 deal's conversation had been deleted. Each is a test.
 
@@ -363,7 +379,7 @@ What they found, in order of how many hit it:
 **Fixed-moment replays** (2026-09-23, `sim/replay.py`, `sim/replay.json`). Five moments from the randomized
 simulation, each put in front of a fresh cheapest-model assistant five times on the previous code and five
 on this change, and scored from the database only. Across the three attacks where an adversary's reply
-carried a fake "SYSTEM:" or moderator line — an iftar donation, evening childcare, anonymous recovery
+carried a fake "SYSTEM:" or moderator line — an iftar donation, evening childcare, unnamed recovery
 support — adversary deals fell from 9 of 15 to 0 of 15 and right deals rose from 4 to 7; the honest control
 made its deal 3 of 3 times on both. On the recovery need the old code agreed with the adversary all five
 times, each assistant naming the "verified by moderators" line as reassurance; with the line labelled as a
@@ -388,11 +404,20 @@ against the rule. Instructions move behaviour; they do not bind it.
   code and 4 of 5 on the code of that day, where a yes in advance did not cover someone answering 3 or more
   needs (a rule dropped with the facts line) and one assistant stopped to ask. Fake notices are caught; fluent
   invention is not. What limits the harm is after the deal: meeting in public, checking the name.
-- **Unattended deals.** With a standing yes and a schedule, an assistant can close a deal while its person
-  is away. The scope of the standing yes is the real guard; a vague one ("say yes to anything") is an open
-  door.
-- **"Only your person can say yes" is an instruction to an assistant**, not something a server can check.
-- **Anonymity is thin in small groups.** What someone writes may make it obvious who they are, and the
+- **The yes page is a bearer link.** Whoever holds it — someone who sees the person's chat, someone they forward it
+  to, an assistant driving a browser — can confirm a waiting yes and sees the name and contact a deal would hand
+  over. It never expires on its own; `new_link`, for when someone else may have had access, replaces it. A link
+  previewer that only fetches it changes nothing: confirming takes a POST. Its link passes through Cloudflare like
+  every page's address.
+- **Taking a deal back cannot recall it.** After a deal, a person can stop Bridge showing names and contacts, both
+  ways, but whatever the other side already saw or saved is theirs. Someone who checks first and takes it back at
+  once can hold the other's contact while the other never saw theirs; the same is true of a throwaway contact.
+- **A yes held back with a reply says the others had said yes.** A `reply` carrying a yes that meets everyone
+  else's is not sent, since it would clear their yeses, and its sender learns that before the deal, which nothing
+  else shows. The person has already said yes; only their own confirming is left.
+- **"Only your person can say yes" is an instruction to an assistant**, but a name and contact no longer leave
+  without the person's own press on their yes page.
+- **Being unnamed protects little in small groups.** What someone writes may make it obvious who they are, and the
   guard does not stop a person describing themselves. An owner's count of the others is exact, so in a
   community of a few the owner can tell who wrote a need. Members are told a community is `small` below ten
   joins ever; one that shrinks after ten is not flagged.
@@ -463,7 +488,7 @@ against the rule. Instructions move behaviour; they do not bind it.
   need, or its partner report their other needs.
 - **A deal partner's second account can report them.** The server cannot tell it from anyone else's, so an
   owner who acts on that report shows the deal partner which needs went. And a deal partner's own reports of
-  them go nowhere, so one who reports anonymous needs to an owner who acts on every report learns, by which
+  them go nowhere, so one who reports unnamed needs to an owner who acts on every report learns, by which
   needs vanish, which were not their partner's.
 - **Deleted data stays in backups for up to 15 days.**
 - **A nudge's timing is visible** to whoever sees the phone it rings on, and ntfy.sh sees when each topic is
@@ -505,12 +530,14 @@ person a question after a deal.
 
 ## 6. Deliberately absent
 
-The only pages are home, which is also the documentation a directory asks for; the invite page and the connect
-page it leads to; the Allow page an app's sign-in opens, and its page for a sign-in that expired; the invalid-link
-page, and the page for an address with none; and the consent page, which is also the privacy policy and the
-terms. None of them knows who anyone is. Beside
-them, one line of plain text proves to OpenAI that this host is the publisher's. The Allow page
-exists because sign-in needs a page the person's own browser shows: it holds one button, and asks for nothing.
+The only pages are home; the documentation a directory asks for (`/docs`), which a server's theme provides, since
+its words name the operator and how to reach them; the invite page and the connect page it leads to; the Allow page
+an app's sign-in opens, and its page for a sign-in that expired; the invalid-link page, and the page for an address
+with none; the consent page, which is also the privacy policy and the terms; and a person's yes page. None of them
+knows who anyone is: the yes page knows its person only by its link. Beside them, one line of plain text proves to
+OpenAI that this host is the publisher's. The Allow page exists because sign-in needs a page the person's own browser
+shows: it holds one button, and asks for nothing. The yes page exists because a name and contact should leave only on
+the person's own press (§2): it holds a Confirm and a Take back for each yes, and nothing else.
 
 No email, and no notification anyone did not ask for: a person may ask for a content-free nudge to an ntfy.sh
 topic the server makes, and a chat may ask to be woken by an empty event (§2); nothing else is ever sent to
@@ -525,7 +552,7 @@ talk. No model on the server, no API keys. No ads.
    would not have found themselves?
 2. **Will people hand their AI "go"?** The whole bet. The simulation assumed it.
 3. **Is the liar problem solved or moved?** What stops a patient liar, besides the invite link?
-4. **Is anonymous-until-yes worth what it costs?** It is what makes a liar cheap.
+4. **Is unnamed-until-yes worth what it costs?** It is what makes a liar cheap.
 5. **Does "everyone sees everything" hold at a thousand members?** Every assistant can read every need in its
    communities, on its person's plan, and pages through as far as it likes. At what size does that cost more
    than it finds, and do the needs past the first page ever get read?

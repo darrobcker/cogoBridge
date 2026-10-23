@@ -1,0 +1,82 @@
+{% extends "base.html" %}
+{% block title %}Your yeses{% endblock %}
+{% block role %}text{% endblock %}
+{% block main %}
+{#- What each yes is now, and what pressing a button did. A yes is the only thing a person confirms outside their
+    chat: it is where a name and a contact leave (PROTOCOL.md §3 rule 5). -#}
+{% set heads = {
+  "waits": "Waiting for you to confirm",
+  "counts": "Confirmed: waiting on the others",
+  "deal": "A deal",
+  "unshown": "A deal, no longer shown",
+  "taken back": "Taken back",
+  "changed": "No longer counts: the conversation changed",
+  "left": "No longer counts: who is in it changed",
+  "out": "You are no longer in this conversation",
+  "over": "The conversation is over",
+  "expired": "Not confirmed in time",
+} %}
+{% set says = {
+  "waits": "Nothing is shared until you confirm. A new message in the conversation before then cancels this yes.",
+  "counts": "It becomes a deal when everyone else still in the conversation confirms theirs. You can still take it back; nobody is told.",
+  "deal": "You were introduced: ask your AI to check Bridge for who they are and how to reach them. You can stop Bridge showing your name and contact to them, and theirs to you, from now on. It cannot recall what anyone already saw or saved.",
+  "unshown": "Bridge no longer shows your name and contact to them, or theirs to you. What anyone already saw stays seen.",
+  "taken back": "Nothing of yours was shared, and nobody was told.",
+  "changed": "Someone wrote in the conversation after this yes. A yes is to the conversation as it stood: ask your AI to show you what changed, and to say yes again if you still want to.",
+  "left": "Someone is no longer in the conversation, so this yes is not to what is left. Ask your AI to say yes again if you still want to.",
+  "out": "Nothing of yours is shared there.",
+  "over": "It can no longer become a deal. Nothing of yours was shared.",
+  "expired": "It waited " ~ days ~ " days. Ask your AI to say yes again if you still want to.",
+} %}
+{% set done_says = {
+  "yes": "Confirmed. It becomes a deal when everyone else in the conversation confirms theirs.",
+  "deal": "Confirmed, and it is a deal: ask your AI to check Bridge for who they are and how to reach them.",
+  "already": "That yes was already confirmed.",
+  "withdrawn": "Taken back. Nothing of yours was shared, and nobody was told.",
+  "unshown": "Done: Bridge no longer shows your name and contact to them, or theirs to you.",
+  "no yes": "There was nothing to take back.",
+  "no place": "This yes cannot count: the need of yours it answers has no place left. It is full, or you already confirmed a yes in another conversation on it. Take that one back first, or ask your AI for one more deal.",
+} %}
+<h1>Your yeses</h1>
+<p>Your AI records a yes when you tell it yes to a conversation on Bridge. Nothing is shared until you confirm it
+here, yourself. When everyone in the conversation has confirmed, it is a deal: each of you gets the others' name
+and contact, for good, and Bridge carries nothing more between you. A deal is an introduction, not a check of who
+anyone is: meet somewhere public first.</p>
+<p class="muted">This page is yours alone. Anyone with its link can confirm or take back your yeses and see the name
+and contact below, and Bridge cannot tell you from them, or from an AI pressing buttons: keep the link to yourself,
+and press them yourself. Text between &lt;&lt;&lt; and &gt;&gt;&gt; was written by people in the conversation.</p>
+{% if done %}
+<p role="status"><strong>{{ done_says.get(done) or says.get(done, "") }}</strong></p>
+{% endif %}
+{% for y in yeses %}
+<section id="{{ y.id }}">
+<h2>{{ heads[y.state] }} &middot; {{ y.said }}</h2>
+<p>{{ says[y.state] }}{% if y.state == "waits" %} Confirm by {{ y.until }}.{% endif %}</p>
+{% for need in y.needs %}
+<p>{% if need.by == "you" %}Your need{% else %}A need by {{ need.by }}{% endif %}{% if need.community %}, in
+{{ need.community }}{% endif %}: {{ need.text }}</p>
+{% endfor %}
+{% if y.people %}
+<p>{{ y.people }} people in it, you included, none named.{% if y.last %} The last each wrote before your yes:{% endif %}</p>
+{% if y.last %}
+<ul>
+{% for m in y.last %}<li>{{ m.from }}: {{ m.text }}</li>
+{% endfor %}
+</ul>
+{% endif %}
+{% endif %}
+{% if y.name or y.contact %}
+<p>A deal gives the others your name, {{ y.name }}, and your contact, {{ y.contact }}{% if y.state in ("waits", "counts") %}, as you had set them when you said yes; a change you make later reaches them too{% endif %}.</p>
+{% endif %}
+{% if y.state in ("waits", "counts", "expired", "deal") %}
+<form method="post">
+<input type="hidden" name="yes" value="{{ y.id }}">
+{% if y.state == "waits" %}<button type="submit" name="action" value="confirm">Confirm my yes</button>{% endif %}
+<button type="submit" name="action" value="take_back">{% if y.state == "deal" %}Stop showing my name and contact{% else %}Take it back{% endif %}</button>
+</form>
+{% endif %}
+</section>
+{% else %}
+<p>No yeses yet.</p>
+{% endfor %}
+{% endblock %}
