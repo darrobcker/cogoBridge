@@ -175,7 +175,10 @@ def create_app(store: Store, *, base_url: str, operator: str = "", claude_listin
             gone = net.deny(store, ref) or waiting
             return RedirectResponse(construct_redirect_uri(gone["redirect_uri"], error="access_denied",
                                                            state=gone["state"]), status_code=303)
-        allowed = net.allow(store, ref, invite)
+        try:
+            allowed = net.allow(store, ref, invite)
+        except net.Refused:
+            return page("busy.html", 429)
         if allowed is None:
             return page("expired.html", 400)
         data, code = allowed

@@ -430,7 +430,7 @@ against the rule. Instructions move behaviour; they do not bind it.
   replace the link and remove people, one at a time, and only ones they have met through a need, a conversation
   or a report. Nothing server-side tells a harvester apart, so the invite link is the boundary. Registration,
   the Allow page and the token endpoint are not limited by address: a flood of them is for whatever is in front
-  of the server (Cloudflare) to stop, beyond a cap on a day's app registrations. Presses of Join and Allow are
+  of the server (Cloudflare) to stop, beyond caps on a day's app registrations and Allows. Presses of Join are
   logged uncapped, one `calls` row each until the sweep.
 - **A second account is prevented by words and a code.** Removing Bridge from an app and adding it again,
   or adding it in a second app, makes a new account until a code from a working connection is given there. The
@@ -535,7 +535,7 @@ person a question after a deal.
 
 The only pages are home; the documentation a directory asks for (`/docs`, and `/support`, which goes to its
 support part), which a server's theme provides, since its words name the operator and how to reach them; the invite page and the connect page it leads to; the Allow page
-an app's sign-in opens, and its page for a sign-in that expired; the invalid-link page, and the page for an address
+an app's sign-in opens, and its pages for a sign-in that expired or that a day's limit turned away; the invalid-link page, and the page for an address
 with none; the consent page, which is also the privacy policy and the terms; and a person's yes page. None of them
 knows who anyone is: the yes page knows its person only by its link. Beside them, one line of plain text proves to
 OpenAI that this host is the publisher's. The Allow page exists because sign-in needs a page the person's own browser

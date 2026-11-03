@@ -1,7 +1,7 @@
 """One ASGI app: the pages at /, sign-in, everyone's assistant at /mcp, and the older own links at /c/<secret>/mcp."""
 from __future__ import annotations
 
-from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
+from urllib.parse import parse_qs, parse_qsl, urlencode, urlparse, urlunparse
 
 from mcp.server.auth.handlers.metadata import MetadataHandler
 from mcp.server.auth.middleware.auth_context import AuthContextMiddleware
@@ -94,8 +94,8 @@ class _PostOnly:
 class _Issuer:
     """RFC 9207: every answer to a sign-in that goes back to the app names the server it came from, so an app signed in
     with several cannot be handed one's answer as another's. Answers come from two places, the SDK's own checks at
-    /authorize and the Allow page, so they are named here, once, on the way out; a step within this server (the SDK
-    sending the person on to Allow) is left as it is."""
+    /authorize and the Allow page, so they are named here, once, on the way out; the one step within this server
+    (the SDK sending the person on to Allow) is left as it is."""
 
     PATHS = ("/authorize", "/allow")
 
@@ -103,12 +103,17 @@ class _Issuer:
         self.app, self.issuer, self.here = app, issuer, urlparse(issuer).netloc
 
     def _named(self, location: str) -> str:
-        """Appended, the rest left byte for byte: parsed and rebuilt, a query loses what parsing drops (`state=`)."""
+        """Appended, the rest left byte for byte: parsed and rebuilt, a query loses what parsing drops (`state=`).
+        Only the SDK's step on to the Allow page is this server's own; an app may return to an address on this host
+        too, and an `iss` its address already carries is replaced, since only this server's may stand (review)."""
         there = urlparse(location)
-        if not there.scheme or there.netloc == self.here or "iss" in parse_qs(there.query, keep_blank_values=True):
+        if not there.scheme or (there.netloc == self.here and there.path == "/allow"):
             return location
+        query = there.query
+        if "iss" in parse_qs(query, keep_blank_values=True):
+            query = urlencode([(k, v) for k, v in parse_qsl(query, keep_blank_values=True) if k != "iss"])
         iss = urlencode({"iss": self.issuer})
-        return urlunparse(there._replace(query=f"{there.query}&{iss}" if there.query else iss))
+        return urlunparse(there._replace(query=f"{query}&{iss}" if query else iss))
 
     async def __call__(self, scope, receive, send):
         if scope["type"] != "http" or scope["path"] not in self.PATHS:

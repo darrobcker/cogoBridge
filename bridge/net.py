@@ -40,6 +40,7 @@ SMALL = 10                        # under this many ever joined, a community's m
 JOINS_PER_DAY = 100               # people a day for whom a community is their first; the link is the trust boundary
 UNINVITED_PER_DAY = 1000          # people a day made with no invite to join: anyone can sign in
 APPS_PER_DAY = 1000               # apps registering for sign-in a day, each a row until the sweep
+ALLOWS_PER_DAY = 5000             # Allows pressed a day: each makes a connection the sweep keeps a month
 # An app keeps the registration it made and comes back on it: an app review weeks later, every person who adds an app
 # listed in a directory. Deleted under it, the app is refused (`invalid_client`) and cannot say why.
 APP_KEEP_S = 183 * 86400          # an app's registration while no connection holds it
@@ -548,6 +549,10 @@ def allow(store: Store, request: str, invite: str = "") -> tuple[dict, str] | No
         row = _live_token(store, request, "request")
         if not row:
             return None
+        # One registration can sign in without end, and a connection that made nobody is kept a month (review).
+        if _today(store, "allows") >= ALLOWS_PER_DAY:
+            raise Refused("too many sign-ins today; try again tomorrow")
+        _count(store, "allows")
         store.exec("DELETE FROM tokens WHERE hash=?", row["hash"])
         data = json.loads(row["data"])
         grant, code = _new_id(store, "grants", "k", 16), secrets.token_urlsafe(32)

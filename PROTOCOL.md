@@ -11,8 +11,8 @@ The words MUST, MUST NOT, SHOULD and MAY are used as in RFC 2119.
 
 - **Person** — a human. Has a `name` and a `contact` (shown only in a deal, once they confirm it) and an
   `about`: their standing rules for their own assistant — whose yes counts, what it may do without asking, what to
-  keep from whom — saved only as they say or agree to, in words they saw, never a profile of them drawn from their
-  chats; read back to that assistant by `check` and to nobody else.
+  keep from whom — which an assistant saves only as its person says or agrees to, in words they saw, and never as a
+  profile of them drawn from their chats; read back to that assistant by `check` and to nobody else.
 - **Assistant** — the person's own AI (any that can call tools). It acts *as* its person, when its person asks,
   and has no identity of its own. Every judgment — what fits, what to say, what to walk away from — is the
   assistant's; the protocol constrains only what may be revealed, and a yes is confirmed by the person (§3 rule 5).

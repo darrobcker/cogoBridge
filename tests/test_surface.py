@@ -691,6 +691,10 @@ def test_about_is_the_person_s_own_rules_and_never_a_profile_kept_as_the_assista
             assert phrase not in flat, (phrase, text[:300])
     assert "standing rules" in tools["setup"] and "never a profile" in tools["setup"]
     assert "in words they saw" in tools["setup"]
+    # Notes saved under the old instructions are locked, so no migration can mark them; whatever is there is shown
+    # to its person before it is followed as theirs (review).
+    call(fresh, "setup", about="Likes climbing; shy; say yes to lifts")
+    assert "if your person has not seen these word for word, show them" in " ".join(call(fresh, "check").split())
 
 
 # -- the invite pages ---------------------------------------------------------------------------------------
@@ -980,9 +984,12 @@ def test_sign_in_says_it_takes_apps_without_a_secret_and_names_itself_in_every_a
     assert back["iss"] == [SITE] and back["state"] == ["st8"] and back["code"]
     wrong = answer(b.get("/authorize", params={**ask, "scope": "everything"}, follow_redirects=False))
     assert wrong["iss"] == [SITE] and wrong["error"] == ["invalid_scope"] and wrong["state"] == ["st8"]
-    # Appended to what the app's address already carries, which is left as it was, an empty value included.
-    named = bridge_app._Issuer(None, issuer=SITE)._named
-    assert named("https://app.test/cb?x=&k=a%2Bb#f") == f"https://app.test/cb?x=&k=a%2Bb&iss={quote(SITE, safe='')}#f"
+    # Appended to what the app's address already carries, which is left as it was, an empty value included; an app's
+    # address on this same host is still an app's (review), and an `iss` already in it is replaced, not trusted.
+    named, iss = bridge_app._Issuer(None, issuer=SITE)._named, f"iss={quote(SITE, safe='')}"
+    assert named("https://app.test/cb?x=&k=a%2Bb#f") == f"https://app.test/cb?x=&k=a%2Bb&{iss}#f"
+    assert named(f"{SITE}/client-callback?code=c") == f"{SITE}/client-callback?code=c&{iss}"
+    assert named("https://app.test/cb?iss=https%3A%2F%2Fevil.test&code=c") == f"https://app.test/cb?code=c&{iss}"
     assert named(f"{SITE}/allow?r=1") == f"{SITE}/allow?r=1" and named("/docs") == "/docs"
 
 
@@ -1289,6 +1296,26 @@ def test_a_days_app_registrations_are_capped(store, monkeypatch):
     b = browser(store)
     codes = [b.post("/register", json={"redirect_uris": [CALLBACK]}).status_code for _ in range(3)]
     assert codes == [201, 201, 400]
+
+
+def test_a_days_allows_are_capped(store, clock, monkeypatch):
+    """One registration could press Allow without end, a row each, and a connection that made nobody is kept a month
+    now that reviewers come back on one (review of that change, which made such a flood thirty times as heavy). A
+    day's Allows are capped, and the page says so; one the cap turned away makes no connection."""
+    clock.t = time.time()
+    monkeypatch.setattr(net, "ALLOWS_PER_DAY", 2)
+    b = browser(store)
+    client = b.post("/register", json={"redirect_uris": [CALLBACK], "token_endpoint_auth_method": "none"}).json()
+
+    def press() -> int:
+        asked = b.get("/authorize", params={"response_type": "code", "client_id": client["client_id"],
+                                            "redirect_uri": CALLBACK, "code_challenge": "c" * 43,
+                                            "code_challenge_method": "S256", "state": "s"}, follow_redirects=False)
+        ref = parse_qs(urlparse(asked.headers["location"]).query)["r"][0]
+        return b.post("/allow", data={"r": ref, "choice": "allow"}, follow_redirects=False)
+    answers = [press() for _ in range(3)]
+    assert [a.status_code for a in answers] == [303, 303, 429]
+    assert "tomorrow" in answers[2].text and store.one("SELECT COUNT(*) n FROM grants")["n"] == 2
 
 
 def test_a_member_reports_and_the_owner_acts_from_chat(live):
