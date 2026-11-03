@@ -1,12 +1,12 @@
 """One ASGI app: the pages at /, sign-in, everyone's assistant at /mcp, and the older own links at /c/<secret>/mcp."""
 from __future__ import annotations
 
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
 from mcp.server.auth.handlers.metadata import MetadataHandler
 from mcp.server.auth.middleware.auth_context import AuthContextMiddleware
 from mcp.server.auth.middleware.bearer_auth import BearerAuthBackend, RequireAuthMiddleware
-from mcp.server.auth.provider import ProviderTokenVerifier, construct_redirect_uri
+from mcp.server.auth.provider import ProviderTokenVerifier
 from mcp.server.auth.routes import (
     build_metadata,
     build_resource_metadata_url,
@@ -103,10 +103,12 @@ class _Issuer:
         self.app, self.issuer, self.here = app, issuer, urlparse(issuer).netloc
 
     def _named(self, location: str) -> str:
+        """Appended, the rest left byte for byte: parsed and rebuilt, a query loses what parsing drops (`state=`)."""
         there = urlparse(location)
-        if not there.scheme or there.netloc == self.here or "iss" in parse_qs(there.query):
+        if not there.scheme or there.netloc == self.here or "iss" in parse_qs(there.query, keep_blank_values=True):
             return location
-        return construct_redirect_uri(location, iss=self.issuer)
+        iss = urlencode({"iss": self.issuer})
+        return urlunparse(there._replace(query=f"{there.query}&{iss}" if there.query else iss))
 
     async def __call__(self, scope, receive, send):
         if scope["type"] != "http" or scope["path"] not in self.PATHS:

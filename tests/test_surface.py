@@ -12,7 +12,7 @@ import threading
 import time
 from pathlib import Path
 from typing import NamedTuple
-from urllib.parse import parse_qs, unquote, urlparse
+from urllib.parse import parse_qs, quote, unquote, urlparse
 
 import httpx
 import pytest
@@ -20,6 +20,7 @@ import uvicorn
 from conftest import own_link
 from starlette.testclient import TestClient
 
+from bridge import app as bridge_app
 from bridge import mcp_server, net, web
 from bridge.app import create_app
 from bridge.mcp_server import create_mcp, said
@@ -979,6 +980,10 @@ def test_sign_in_says_it_takes_apps_without_a_secret_and_names_itself_in_every_a
     assert back["iss"] == [SITE] and back["state"] == ["st8"] and back["code"]
     wrong = answer(b.get("/authorize", params={**ask, "scope": "everything"}, follow_redirects=False))
     assert wrong["iss"] == [SITE] and wrong["error"] == ["invalid_scope"] and wrong["state"] == ["st8"]
+    # Appended to what the app's address already carries, which is left as it was, an empty value included.
+    named = bridge_app._Issuer(None, issuer=SITE)._named
+    assert named("https://app.test/cb?x=&k=a%2Bb#f") == f"https://app.test/cb?x=&k=a%2Bb&iss={quote(SITE, safe='')}#f"
+    assert named(f"{SITE}/allow?r=1") == f"{SITE}/allow?r=1" and named("/docs") == "/docs"
 
 
 def test_support_is_where_the_docs_say(store, tmp_path):
