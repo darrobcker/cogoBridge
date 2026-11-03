@@ -193,7 +193,7 @@ def test_two_friends_make_a_deal_entirely_in_chat(live):
     said = call(ola, "setup", name="Ola Mensah", contact="ola@example.com", about="baking; yes to climbing")
     assert HEAR in said and "scheduled task" in said and "Check Bridge" in said and "notify" in said
     assert "Watch Bridge" not in said                                  # ChatGPT's own, to ChatGPT alone
-    assert "Your notes on your person" in call(ola, "check") and "yes to climbing" in call(ola, "check")
+    assert "Your person's standing rules for you" in call(ola, "check") and "yes to climbing" in call(ola, "check")
     call(rae, "setup", name="Rae Iwuchukwu", contact="+44 7700 900123", about="climbing, rust")
     need = re.search(r"\[(n-[^\]]+)\]", call(ola, "go", text="A climbing partner for weekday evenings")).group(1)
     assert need in call(rae, "check") and "Ola" not in call(rae, "check")
@@ -672,6 +672,26 @@ def test_nothing_says_anonymous(store):
     assert "can identify them" in tools["go"]
 
 
+def test_about_is_the_person_s_own_rules_and_never_a_profile_kept_as_the_assistant_learns(live, store):
+    """Anthropic's directory policy (1.G): a connector must not "persistently store or use conversation content to
+    build user profiles". `about` was the assistant's own notes on its person, what they want and bring, kept "as
+    you learn": a profile built from the chat, stored on the server (directory review). It is now the person's
+    standing rules for their assistant, saved only as they say or agree to, in words they saw; nothing an assistant
+    is told says to keep notes on them."""
+    server = create_mcp(store, base_url=SITE)
+    tools = {t.name: " ".join(t.description.split()) for t in asyncio.run(server.list_tools())}
+    fresh = live()
+    shown = [server.instructions, mcp_server.RULES, *tools.values(), call(fresh, "check"),
+             call(fresh, "setup", name="Ola"), call(fresh, "check")]
+    for text in shown:
+        flat = " ".join(text.split()).lower()
+        for phrase in ("as you learn", "notes on your person", "notes on the person", "what they want and bring",
+                       "what you noted"):
+            assert phrase not in flat, (phrase, text[:300])
+    assert "standing rules" in tools["setup"] and "never a profile" in tools["setup"]
+    assert "in words they saw" in tools["setup"]
+
+
 # -- the invite pages ---------------------------------------------------------------------------------------
 
 def test_the_invite_page_makes_nobody_and_records_the_press(store):
@@ -934,6 +954,43 @@ def test_an_app_finds_how_to_sign_in_from_the_address_alone(store):
     assert server["authorization_endpoint"] == f"{SITE}/authorize" and server["token_endpoint"] == f"{SITE}/token"
 
 
+def test_sign_in_says_it_takes_apps_without_a_secret_and_names_itself_in_every_answer(store, clock):
+    """OpenAI's guide to sign-in for ChatGPT: a server lists every way its token endpoint takes an app, and one that
+    names itself (RFC 9207 `iss`) in every answer to a sign-in, errors included, says so; ChatGPT then returns to one
+    stable address. Bridge took apps with no secret but listed only the two secret methods, and named itself in no
+    answer (directory resubmission, 2026-11-03). What goes on within this server is not touched."""
+    clock.t = time.time()
+    b = browser(store)
+    server = b.get("/.well-known/oauth-authorization-server").json()
+    assert "none" in server["token_endpoint_auth_methods_supported"]
+    assert "none" in server["revocation_endpoint_auth_methods_supported"]
+    assert server["authorization_response_iss_parameter_supported"] is True and server["issuer"] == SITE
+    client = b.post("/register", json={"redirect_uris": [CALLBACK], "client_name": "An app",
+                                       "token_endpoint_auth_method": "none"}).json()
+    ask = {"response_type": "code", "client_id": client["client_id"], "redirect_uri": CALLBACK,
+           "code_challenge": "c" * 43, "code_challenge_method": "S256", "state": "st8"}
+
+    def answer(response) -> dict:
+        assert response.status_code in (302, 303, 307), response.status_code
+        return parse_qs(urlparse(response.headers["location"]).query)
+    asked = b.get("/authorize", params=ask, follow_redirects=False)
+    assert asked.headers["location"].startswith(f"{SITE}/allow?") and "iss" not in answer(asked)
+    back = answer(b.post("/allow", data={"r": answer(asked)["r"][0], "choice": "allow"}, follow_redirects=False))
+    assert back["iss"] == [SITE] and back["state"] == ["st8"] and back["code"]
+    wrong = answer(b.get("/authorize", params={**ask, "scope": "everything"}, follow_redirects=False))
+    assert wrong["iss"] == [SITE] and wrong["error"] == ["invalid_scope"] and wrong["state"] == ["st8"]
+
+
+def test_support_is_where_the_docs_say(store, tmp_path):
+    """A directory's support link: /support was a missing page. It goes to the support part of the theme's docs, and
+    a server with no docs has no /support either."""
+    assert browser(store).get("/support").status_code == 404
+    (tmp_path / "templates").mkdir()
+    (tmp_path / "templates" / "docs.html").write_text("<h2 id='support'>Support</h2>")
+    moved = browser(store, theme=str(tmp_path)).get("/support", follow_redirects=False)
+    assert moved.status_code in (302, 307) and moved.headers["location"] == "/docs#support"
+
+
 def test_allow_makes_a_connection_and_nobody_until_its_first_call(store, clock):
     """One door, kept through sign-in: pressing Allow, like pressing Join, makes nobody; an app that signs in and
     never calls leaves no person, no membership and nothing in an owner's count."""
@@ -970,7 +1027,8 @@ def test_the_allow_page_names_the_app_where_it_returns_and_the_community(store, 
     ref = parse_qs(urlparse(asked.headers["location"]).query)["r"][0]
     cancelled = b.post("/allow", data={"r": ref, "choice": "deny"}, follow_redirects=False)
     assert cancelled.status_code == 303
-    assert parse_qs(urlparse(cancelled.headers["location"]).query) == {"error": ["access_denied"], "state": ["st8"]}
+    assert parse_qs(urlparse(cancelled.headers["location"]).query) == {"error": ["access_denied"], "state": ["st8"],
+                                                                       "iss": [SITE]}
     assert b.post("/allow", data={"r": ref, "choice": "allow"}, follow_redirects=False).status_code == 400
 
 
@@ -1064,7 +1122,8 @@ def test_an_mcp_client_that_follows_the_spec_signs_in_by_the_address_alone(live,
 
 
 async def _returned(returned: dict, result):
-    return result(code=returned["code"], state=returned.get("state"))
+    # As an app's own callback does: the server names itself (RFC 9207), and the SDK checks it against its metadata.
+    return result(code=returned["code"], state=returned.get("state"), iss=returned.get("iss"))
 
 
 def test_a_connection_made_under_the_old_hostname_works_after_a_move(store, clock):

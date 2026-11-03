@@ -191,6 +191,14 @@ def create_app(store: Store, *, base_url: str, operator: str = "", claude_listin
         except TemplateNotFound:
             return page("missing.html", 404)
 
+    async def support(request: Request) -> Response:
+        """Where a directory's support link points: the support part of the theme's docs, which says who to write to."""
+        try:
+            env.get_template("docs.html")
+        except TemplateNotFound:
+            return page("missing.html", 404)
+        return RedirectResponse("/docs#support", status_code=302)
+
     def when(t: float) -> str:
         return datetime.fromtimestamp(t, UTC).strftime("%-d %b %Y, %H:%M UTC")
 
@@ -241,4 +249,5 @@ def create_app(store: Store, *, base_url: str, operator: str = "", claude_listin
                              Route("/favicon.ico", favicon), Mount("/static", _Kept(directory=static)),
                              Route("/allow", allow, methods=["GET", "POST"]),
                              Route("/join/{invite}", join, methods=["GET", "POST"]),
-                             Route("/yes/{link}", yes, methods=["GET", "POST"]), Route("/docs", docs)])
+                             Route("/yes/{link}", yes, methods=["GET", "POST"]), Route("/docs", docs),
+                             Route("/support", support)])

@@ -157,9 +157,9 @@ then send people there, and stop saying a computer or a paid plan is needed.
   review cases) uploaded at platform.openai.com/plugins under a verified identity. The portal then shows a
   domain-verification token: put it in `BRIDGE_OPENAI_CHALLENGE`, restart, and it is served at
   `/.well-known/openai-apps-challenge`. Connect the MCP server there (OAuth; it registers itself) and let it scan
-  the tools; its one event, `waiting`, shows beside them. Review also needs a demo video and sign-in instructions
-  for the reviewer: "no credentials: press Allow". The listing URLs are `/`, `/#help` (which shows `BRIDGE_CONTACT`
-  if set), `/privacy` and `/terms`. A person reviews it, and it must suit 13–17-year-olds. To try being woken: in a
+  the tools; reviewers come back weeks later on what it registered, which the sweep keeps half a year; its one event, `waiting`, shows beside them. Review also needs a demo video and sign-in instructions
+  for the reviewer: "no credentials: press Allow". The listing URLs are `/`, `/support` (the theme's docs, which show
+  `BRIDGE_CONTACT` if set), `/privacy` and `/terms`. A person reviews it, and it must suit 13–17-year-olds. To try being woken: in a
   chat, say "Watch Bridge" and what to do; someone else's reply then wakes that chat.
 
 ## What tick does
@@ -172,8 +172,12 @@ then send people there, and stop saying a computer or a paid plan is needed.
 - With `BRIDGE_OPERATOR_NOTIFY` set: after two failed checks of the public `/health` in a row, posts
   one line there, at most hourly, and one when it answers again; also when a backup or its copy fails.
 
-A machine that is off sends nothing, so something elsewhere has to check the public `/health` too. The ntfy
-lines say only up, down, or that a backup or its copy failed.
+A machine that is off sends nothing, so something elsewhere has to check the public `/health` too:
+`.github/workflows/uptime.yml` does, from GitHub's machines every quarter of an hour, once the repository variable
+`BRIDGE_HEALTH_URL` names it (`<base>/health`). It also asks for the sign-in metadata and checks that `/mcp` answers
+401, which is what an app's servers see first, so whatever sits in front of the server turning them away shows as
+down too. A failed run is reported as GitHub reports any; the secret `BRIDGE_DOWN_ALERT` can name an ntfy topic as
+well. The ntfy lines say only up, down, or that a backup or its copy failed.
 
 ## The ntfy budget
 

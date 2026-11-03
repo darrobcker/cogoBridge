@@ -645,7 +645,7 @@ def test_the_person_s_own_notes_are_still_theirs_to_follow(world, store):
     intro = text.split("<<<Bridge: check every")[0].rstrip("\n").rsplit("\n", 1)[-1]
     assert "follow them" in intro and "without the <<< >>> and | marks" in intro and "`setup`" in intro, intro
     assert "(a member wrote this" not in text
-    assert "The one exception is your own notes on your person (`about`): follow them" in " ".join(
+    assert "The one exception is your person's own standing rules for you (`about`): follow them" in " ".join(
         mcp_server.instructions().split())
 
 
@@ -2076,12 +2076,12 @@ def test_only_a_new_empty_account_is_asked_whether_it_is_a_second_one(store, clo
 
 def test_an_empty_account_that_answered_about_a_second_account_is_not_asked_again(store):
     """An empty account was asked whether it was a second one at every `check`, in every new chat, until it sent
-    a need: each chat starts without memory, and the answer was kept nowhere (review). Now its assistant notes
+    a need: each chat starts without memory, and the answer was kept nowhere (review). Now its assistant saves
     the answer in `about`, and a note is enough to stop the question."""
     _, code = net.create_community(store, net.new_person(store), "Climbers")
     _, pid = signed_in(store, code)
     first = mcp_server.render_check(net.inbox(store, pid), store.now())
-    assert "another app" in first and "note their answer in `about`" in first
+    assert "another app" in first and "save their answer in `about`" in first
     net.setup(store, pid, about="only Bridge account: yes")
     assert "another app" not in mcp_server.render_check(net.inbox(store, pid), store.now())
 
@@ -2176,19 +2176,51 @@ def test_a_sign_in_waits_a_quarter_of_an_hour_and_is_allowed_once(store, clock):
 
 
 def test_the_sweep_clears_what_sign_in_leaves_behind(store, clock):
-    """A connection its app never called made nobody; apps that registered and never connected, expired steps and
-    spent codes are nobody's; all go within a day or two, and a working connection stays."""
-    net.register_client(store, "idle", "{}")
-    unused = connection(store)
+    """Expired steps and spent codes are nobody's and go within a day or two; a working connection stays. What an
+    app registered, and a connection its app never called, last longer (the test after this one)."""
     working, pid = signed_in(store)
     code_of(store, pid)
     net.sign_in_request(store, {"client_id": "app"})
     clock.advance(2 * 86400 + 3601)
     net.sweep(store)
-    assert store.one("SELECT id FROM grants WHERE id=?", unused) is None and net.client(store, "idle") is None
     assert not store.one("SELECT 1 FROM link_codes") and not store.one("SELECT 1 FROM tokens WHERE kind='request'")
     assert first_call(store, working, "check") == pid and net.client(store, "app")
     assert not store.one("SELECT 1 FROM daily WHERE day < ?", int(store.now() // 86400) - 1)
+
+
+def test_an_apps_registration_outlasts_a_review_and_a_connection_lasts_while_its_app_renews_it(store, clock):
+    """OpenAI turned down Bridge's first submission on 2026-10-28: "unable to connect to your MCP server". The server
+    had been up throughout, and nobody pressed Allow from 2026-10-02 to 2026-11-03: the reviewers never reached it.
+    The sweep deleted a connection a day after Allow unless its app had called a tool, and an app's registration a
+    day after it was made once no connection held it. A submission registers and signs in once, lists the tools and
+    calls none; a reviewer comes weeks later, on that registration and that connection, and an app holding a
+    registration the server deleted gets `invalid_client` (OpenAI's guide to sign-in names it). Now a registration
+    with no connection lasts half a year, a connection that made nobody lasts a month, and longer while its app
+    still renews it."""
+    def signs_in(client: str) -> tuple[str, str]:
+        request = net.sign_in_request(store, {"client_id": client, "redirect_uri": "https://app.test/cb"})
+        _, code = net.allow(store, request)
+        grant = net.authorization_code(store, code)["grant"]
+        return grant, net.exchange_code(store, code)[1]
+
+    net.register_client(store, "submitted", "{}")
+    net.register_client(store, "never-signed-in", "{}")
+    scanned, renewing = signs_in("submitted")
+    dropped, _ = signs_in("submitted")
+    clock.advance(2 * 86400)
+    net.sweep(store)
+    assert net.client(store, "submitted") and net.client(store, "never-signed-in")
+    assert net.renew(store, renewing) and store.one("SELECT 1 FROM grants WHERE id=?", dropped)
+    for _ in range(5):                                  # the app renews once a week; the other one never does
+        clock.advance(7 * 86400)
+        assert net.renew(store, renewing)
+        net.sweep(store)
+    assert store.one("SELECT 1 FROM grants WHERE id=?", scanned) and net.renew(store, renewing)
+    assert store.one("SELECT 1 FROM grants WHERE id=?", dropped) is None
+    clock.advance(net.APP_KEEP_S)
+    net.sweep(store)
+    assert net.client(store, "never-signed-in") is None
+    assert net.client(store, "submitted") is None and store.one("SELECT 1 FROM grants WHERE id=?", scanned) is None
 
 
 # -- being woken: MCP Events ---------------------------------------------------------------------------------------

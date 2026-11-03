@@ -40,6 +40,10 @@ SMALL = 10                        # under this many ever joined, a community's m
 JOINS_PER_DAY = 100               # people a day for whom a community is their first; the link is the trust boundary
 UNINVITED_PER_DAY = 1000          # people a day made with no invite to join: anyone can sign in
 APPS_PER_DAY = 1000               # apps registering for sign-in a day, each a row until the sweep
+# An app keeps the registration it made and comes back on it: an app review weeks later, every person who adds an app
+# listed in a directory. Deleted under it, the app is refused (`invalid_client`) and cannot say why.
+APP_KEEP_S = 183 * 86400          # an app's registration while no connection holds it
+UNUSED_S = 30 * 86400             # a connection whose app has called no tool, and longer while its app renews it
 INVITE_CODE = 14                  # characters (69 bits) of an invite code
 ACCESS_S = 7 * 86400              # an access token; the renewal token that replaces it never expires (PROTOCOL.md §5)
 REQUEST_S = 900                   # a sign-in waiting on the Allow page
@@ -479,7 +483,7 @@ def _count(store: Store, k: str) -> None:
 
 def register_client(store: Store, client_id: str, info: str) -> None:
     """An app registering for sign-in (RFC 7591). Anyone may, so a day's registrations are capped: each is a row
-    until the sweep takes the ones that never connected."""
+    until the sweep takes one no connection has held for `APP_KEEP_S`."""
     with store.transaction():
         if _today(store, "apps") >= APPS_PER_DAY:
             raise Refused("too many apps registered today; try again tomorrow")
@@ -2275,14 +2279,17 @@ def sweep(store: Store) -> None:
         store.exec(f"DELETE FROM needs WHERE id IN ({gone})", cutoff)
         store.exec("DELETE FROM calls WHERE t < ?", cutoff)
         store.exec("DELETE FROM reports WHERE t < ?", cutoff)
-        # Sign-in: expired steps, connections whose app never called within a day (they made nobody), apps
-        # registered that never connected, spent codes, and counts from before yesterday.
+        # Sign-in: expired steps; connections that made nobody once their app has stopped renewing them, which is
+        # when their last access token has expired; apps' registrations no connection has held for half a year;
+        # spent codes; and counts from before yesterday. A day each, for the last two, turned a review away (test).
         store.exec("DELETE FROM tokens WHERE expires_t < ?", now)
-        store.exec("DELETE FROM tokens WHERE grant_id IN (SELECT id FROM grants WHERE revoked_t IS NOT NULL OR "
-                   "(person_id='' AND created_t < ?))", now - 86400)
-        store.exec("DELETE FROM grants WHERE revoked_t < ? OR (person_id='' AND created_t < ?)", cutoff, now - 86400)
+        unused = ("SELECT id FROM grants WHERE person_id='' AND created_t < ? AND NOT EXISTS "
+                  "(SELECT 1 FROM tokens t WHERE t.grant_id=grants.id AND t.kind='access')")
+        store.exec(f"DELETE FROM tokens WHERE grant_id IN (SELECT id FROM grants WHERE revoked_t IS NOT NULL) OR "
+                   f"grant_id IN ({unused})", now - UNUSED_S)
+        store.exec(f"DELETE FROM grants WHERE revoked_t < ? OR id IN ({unused})", cutoff, now - UNUSED_S)
         store.exec("DELETE FROM clients WHERE created_t < ? AND id NOT IN (SELECT client_id FROM grants)",
-                   now - 86400)
+                   now - APP_KEEP_S)
         store.exec("DELETE FROM link_codes WHERE created_t < ?", now - LINK_CODE_S)
         store.exec("DELETE FROM escrow WHERE until_t < ?", now)
         store.exec("DELETE FROM daily WHERE day < ?", _day(store) - 1)

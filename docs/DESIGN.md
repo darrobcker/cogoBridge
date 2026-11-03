@@ -33,8 +33,8 @@ decision. So no model runs on the server, no API key exists, and hosting costs n
 communities sees it, and each assistant judges it against what it knows. A first cut routed each need to
 the 25 members whose written `about` best matched it, plus some at random. That put a keyword matcher —
 the thing the benchmark showed does not work — back in charge of who gets to judge, and it meant a member's
-`about` was read by the server after all. Now `about` is the assistant's own notes, read back to it and
-used for nothing else. The cost is that `check` in a busy community lists twenty needs and says how many
+`about` was read by the server after all. Now `about` is the person's own standing rules for their assistant,
+read back to it and used for nothing else. The cost is that `check` in a busy community lists twenty needs and says how many
 more there are; the assistant passes what does not fit.
 
 **A yes is confirmed by its person, on a page the server hosts.** `agree` records a yes as waiting and returns a
@@ -159,11 +159,11 @@ all of that, and costs nothing as a community grows.
 
 **A first run starts from the need.** Hosts keep an old copy of a server's instructions until the person
 refreshes (HOSTS.md), and none promises to show them whole, so their first 512 characters stand on their own:
-what this is, that its operator cannot open what members write, one safety question (does anyone else use this AI account
+what this is, that its operator cannot open what is stored, one safety question (does anyone else use this AI account
 or make decisions for them?) whose answer goes in `about` as whose yes counts, then a `check` — which marks the
 communities small enough that a need there is nearly signed — then `go`, then how to hear back. There is no
-setup interview: name and contact are taken at the first yes, and `about` fills as the assistant learns, with
-the person told in a line what was noted. The rules that matter most travel as a block of at most five lines in
+setup interview: name and contact are taken at the first yes, and `about` holds only rules the person gave or
+agreed to word for word. The rules that matter most travel as a block of at most five lines in
 every `check` that lists anything, because that is the only text a host cannot have cached.
 
 **Almost nothing can push, so the assistant checks — on a schedule where it can.** Only ChatGPT lets a server
@@ -198,14 +198,17 @@ key with it. An operator cannot make a code that brings anything back, because t
 every app means starting over (§4). Measured on a laptop: a `check` listing 20 needs and 6 conversations took
 0.3 ms before locks and 1.9 ms after, with each community's and conversation's key opened once per call.
 
-**Settings are the assistant's own notes.** Everything that shapes how an assistant works for its person —
-what they want, what it may say yes to without asking, how often to check — lives in one free-text field,
-`about`, which `check` reads back to that assistant and to no other member. It is stored locked, opened only
-in a call through the person's own connection, and assistants are still told to write rules without naming what
-they protect, since anyone who uses their AI account reads it. Notes
-over 2000 characters are refused, never cut: a cut dropped the rules added last, and said "saved" (audit).
-A scheduled run has no memory of the last one; the notes are its memory. The server interprets none of it,
-so a new kind of preference never needs a new field.
+**Settings are the person's own standing rules.** Everything that shapes how an assistant works for its person —
+whose yes counts, what it may do without asking, what to keep from whom, how often to check — lives in one free-text
+field, `about`, which `check` reads back to that assistant and to no other member. It holds only what the person
+said or agreed to, in words they saw. It used to be the assistant's own notes on its person, kept "as you learn":
+what they want and bring as well as their rules, which is a profile built from their chats, and Anthropic's
+directory policy (1.G) rules out storing one; what a person wants goes out as a need, and their assistant's own
+memory, if the host has one, stays with the host. It is stored locked, opened only in a call through the person's
+own connection, and assistants are still told to write rules without naming what they protect, since anyone who
+uses their AI account reads it. Rules over 2000 characters are refused, never cut: a cut dropped the rules added
+last, and said "saved" (audit). A scheduled run has no memory of the last one; the rules are what it goes by. The
+server interprets none of it, so a new kind of preference never needs a new field.
 
 **A wake-up, if a person wants one.** In the diary studies every person came back by luck. Two wake-ups exist, and
 both say only that something is waiting — never what, never who, at most every ten minutes between them, and
@@ -530,8 +533,8 @@ person a question after a deal.
 
 ## 6. Deliberately absent
 
-The only pages are home; the documentation a directory asks for (`/docs`), which a server's theme provides, since
-its words name the operator and how to reach them; the invite page and the connect page it leads to; the Allow page
+The only pages are home; the documentation a directory asks for (`/docs`, and `/support`, which goes to its
+support part), which a server's theme provides, since its words name the operator and how to reach them; the invite page and the connect page it leads to; the Allow page
 an app's sign-in opens, and its page for a sign-in that expired; the invalid-link page, and the page for an address
 with none; the consent page, which is also the privacy policy and the terms; and a person's yes page. None of them
 knows who anyone is: the yes page knows its person only by its link. Beside them, one line of plain text proves to

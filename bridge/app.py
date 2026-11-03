@@ -1,12 +1,19 @@
 """One ASGI app: the pages at /, sign-in, everyone's assistant at /mcp, and the older own links at /c/<secret>/mcp."""
 from __future__ import annotations
 
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
+from mcp.server.auth.handlers.metadata import MetadataHandler
 from mcp.server.auth.middleware.auth_context import AuthContextMiddleware
 from mcp.server.auth.middleware.bearer_auth import BearerAuthBackend, RequireAuthMiddleware
-from mcp.server.auth.provider import ProviderTokenVerifier
-from mcp.server.auth.routes import build_resource_metadata_url, create_auth_routes, create_protected_resource_routes
+from mcp.server.auth.provider import ProviderTokenVerifier, construct_redirect_uri
+from mcp.server.auth.routes import (
+    build_metadata,
+    build_resource_metadata_url,
+    cors_middleware,
+    create_auth_routes,
+    create_protected_resource_routes,
+)
 from mcp.server.auth.settings import AuthSettings, ClientRegistrationOptions, RevocationOptions
 from pydantic import AnyHttpUrl
 from starlette.applications import Starlette
@@ -38,11 +45,22 @@ def create_app(store: Store, *, base_url: str, operator: str = "", **site: str) 
                                                 scopes_supported=[SCOPE], resource_name="Bridge",
                                                 resource_documentation=AnyHttpUrl(f"{base}/"))
     signed_in = RequireAuthMiddleware(mcp_app, [], build_resource_metadata_url(resource))
+    docs, registration = AnyHttpUrl(f"{base}/"), ClientRegistrationOptions(enabled=True, valid_scopes=[SCOPE],
+                                                                           default_scopes=[SCOPE])
+    sign_in = create_auth_routes(provider, issuer_url=issuer, service_documentation_url=docs,
+                                 client_registration_options=registration,
+                                 revocation_options=RevocationOptions(enabled=True))
+    # The SDK takes an app with no secret (PKCE alone) but lists only the secret methods, and _Issuer names this
+    # server in every answer to a sign-in; OpenAI's guide asks a server to say both (test).
+    said = build_metadata(issuer, docs, registration, RevocationOptions(enabled=True))
+    said.token_endpoint_auth_methods_supported = [*said.token_endpoint_auth_methods_supported, "none"]
+    said.revocation_endpoint_auth_methods_supported = [*said.revocation_endpoint_auth_methods_supported, "none"]
+    said.authorization_response_iss_parameter_supported = True
+    at = next(i for i, route in enumerate(sign_in) if route.path == "/.well-known/oauth-authorization-server")
+    sign_in[at] = Route(sign_in[at].path, endpoint=cors_middleware(MetadataHandler(said).handle, ["GET", "OPTIONS"]),
+                        methods=["GET", "OPTIONS"])
     routes = [
-        *create_auth_routes(provider, issuer_url=issuer, service_documentation_url=AnyHttpUrl(f"{base}/"),
-                            client_registration_options=ClientRegistrationOptions(
-                                enabled=True, valid_scopes=[SCOPE], default_scopes=[SCOPE]),
-                            revocation_options=RevocationOptions(enabled=True)),
+        *sign_in,
         *metadata,
         # Some apps look for the resource's metadata without the path RFC 9728 puts after it.
         Route("/.well-known/oauth-protected-resource", endpoint=metadata[0].endpoint, methods=["GET", "OPTIONS"]),
@@ -51,6 +69,7 @@ def create_app(store: Store, *, base_url: str, operator: str = "", **site: str) 
         Mount("/", app=create_web(store, base_url=base, operator=operator, **site)),
     ]
     middleware = [Middleware(_OneHost, www=f"www.{urlparse(base).hostname}", base=base),
+                  Middleware(_Issuer, issuer=str(issuer)),
                   Middleware(AuthenticationMiddleware, backend=BearerAuthBackend(ProviderTokenVerifier(provider))),
                   Middleware(AuthContextMiddleware)]
     return Starlette(routes=routes, middleware=middleware,
@@ -70,6 +89,37 @@ class _PostOnly:
             await refused(scope, receive, send)
             return
         await self.app(scope, receive, send)
+
+
+class _Issuer:
+    """RFC 9207: every answer to a sign-in that goes back to the app names the server it came from, so an app signed in
+    with several cannot be handed one's answer as another's. Answers come from two places, the SDK's own checks at
+    /authorize and the Allow page, so they are named here, once, on the way out; a step within this server (the SDK
+    sending the person on to Allow) is left as it is."""
+
+    PATHS = ("/authorize", "/allow")
+
+    def __init__(self, app, *, issuer: str):
+        self.app, self.issuer, self.here = app, issuer, urlparse(issuer).netloc
+
+    def _named(self, location: str) -> str:
+        there = urlparse(location)
+        if not there.scheme or there.netloc == self.here or "iss" in parse_qs(there.query):
+            return location
+        return construct_redirect_uri(location, iss=self.issuer)
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http" or scope["path"] not in self.PATHS:
+            await self.app(scope, receive, send)
+            return
+
+        async def named(message):
+            if message["type"] == "http.response.start" and 300 <= message["status"] < 400:
+                message = {**message, "headers": [
+                    (k, self._named(v.decode("latin-1")).encode("latin-1")) if k.lower() == b"location" else (k, v)
+                    for k, v in message.get("headers", [])]}
+            await send(message)
+        await self.app(scope, receive, named)
 
 
 class _OneHost:
