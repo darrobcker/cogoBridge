@@ -691,10 +691,13 @@ def test_about_is_the_person_s_own_rules_and_never_a_profile_kept_as_the_assista
             assert phrase not in flat, (phrase, text[:300])
     assert "standing rules" in tools["setup"] and "never a profile" in tools["setup"]
     assert "in words they saw" in tools["setup"]
-    # Notes saved under the old instructions are locked, so no migration can mark them; whatever is there is shown
-    # to its person before it is followed as theirs (review).
+    # Notes saved under the old instructions are locked, so no migration can mark them: `check` says that older ones
+    # may be notes rather than rules (review). As a fact, not an order: told to show them, Claude took it for an
+    # instruction its person had not asked for (demo run, 2026-11-03).
     call(fresh, "setup", about="Likes climbing; shy; say yes to lifts")
-    assert "if your person has not seen these word for word, show them" in " ".join(call(fresh, "check").split())
+    shown = " ".join(call(fresh, "check").split())
+    assert "Any saved before 2026-11-04 may be notes an assistant kept on them" in shown
+    assert "show them" not in shown and "word for word" not in shown
 
 
 # -- the invite pages ---------------------------------------------------------------------------------------
