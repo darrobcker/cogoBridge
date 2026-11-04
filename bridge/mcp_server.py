@@ -708,7 +708,7 @@ def create_mcp(store: Store, *, base_url: str, operator: str = "", version: str 
                 # words on hearing back (review).
                 + (f"\n{_hearBack(host(ctx))}" if not me["about"] else ""))
 
-    @tool("Reply for me", open_world=True)
+    @tool("Reply for me", destructive=True, open_world=True)
     @_refusals
     def reply(to: str, text: str, agree: bool = False, revision: int | None = None, ctx: Context = None) -> str:
         """Writes in a conversation, as the person asks: `to` is a need id (n-…), which opens a conversation with
@@ -734,7 +734,7 @@ def create_mcp(store: Store, *, base_url: str, operator: str = "", version: str 
                    else f" Their yes went with it. {confirmAt(pid, conversation_id)}" if outcome == net.WAITS
                    else " " + _AGREED[outcome] if outcome else ""))
 
-    @tool("Record my yes, for me to confirm", open_world=True)
+    @tool("Record my yes, for me to confirm", destructive=True, open_world=True)
     @_refusals
     def agree(conversation_id: str, revision: int | None = None, one_more: bool = False, withdraw: bool = False,
               ctx: Context = None) -> str:
