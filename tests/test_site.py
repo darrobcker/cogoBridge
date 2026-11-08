@@ -3,14 +3,21 @@ client's own files. Each call holds only its own person's key: the shared keys a
 from __future__ import annotations
 
 import asyncio
+import base64
+import hashlib
+import hmac
 import inspect
 import json
 import os
 import re
 from pathlib import Path
+from urllib.parse import urlparse
 
+import cbor2
 import pytest
 from conftest import World
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.asymmetric import ec
 from starlette.testclient import TestClient
 
 from bridge import cli, demo, net, site
@@ -75,7 +82,8 @@ def test_signing_in_sets_a_cookie_no_script_can_read(store, pages):
                                         headers=JSON)
     cookie = answer.headers["set-cookie"]
     assert cookie.startswith("__Host-bridge=")
-    for part in ("HttpOnly", "Secure", "Path=/", "SameSite=strict"):
+    # Lax: the Allow page, reached through an app's redirect, must see who is signed in (PROTOCOL.md §5).
+    for part in ("HttpOnly", "Secure", "Path=/", "SameSite=lax"):
         assert part.lower() in cookie.lower()
     assert "domain" not in cookie.lower() and answer.json() == {"signed_in": True}
 
@@ -238,6 +246,141 @@ def test_a_code_for_another_app_signs_the_browser_in_too(store, pages, monkeypat
     finally:
         server.should_exit = True
         thread.join(timeout=5)
+
+
+# -- passkeys, the recovery code, and starting on the web ---------------------------------------------------------
+
+def b64(raw: bytes) -> str:
+    return base64.urlsafe_b64encode(raw).decode().rstrip("=")
+
+
+class Authenticator:
+    """A passkey, as a phone or a password manager holds one: ES256, attestation "none", the person verified, a
+    sign count of 0 as synced passkeys keep, and a PRF secret of its own, unless it has none."""
+
+    def __init__(self, base: str = BASE, prf: bool = True):
+        self.key, self.id, self.prf = ec.generate_private_key(ec.SECP256R1()), os.urandom(16), prf
+        self.secret, self.rp_id, self.origin, self.flags = os.urandom(32), urlparse(base).hostname, base, 0x05
+
+    def _data(self, attested: bool) -> bytes:
+        data = hashlib.sha256(self.rp_id.encode()).digest() + bytes([self.flags | (0x40 if attested else 0)])
+        data += (0).to_bytes(4, "big")
+        if attested:
+            n = self.key.public_key().public_numbers()
+            cose = cbor2.dumps({1: 2, 3: -7, -1: 1, -2: n.x.to_bytes(32, "big"), -3: n.y.to_bytes(32, "big")})
+            data += b"\0" * 16 + len(self.id).to_bytes(2, "big") + self.id + cose
+        return data
+
+    def _client(self, kind: str, challenge: str) -> bytes:
+        return json.dumps({"type": kind, "challenge": challenge, "origin": self.origin, "crossOrigin": False}).encode()
+
+    def _prf(self, options) -> str | None:
+        salt = options["extensions"]["prf"]["eval"]["first"]
+        return b64(hmac.new(self.secret, salt.encode(), hashlib.sha256).digest()) if self.prf else None
+
+    def create(self, options) -> tuple[dict, str | None]:
+        client = self._client("webauthn.create", options["challenge"])
+        made = cbor2.dumps({"fmt": "none", "attStmt": {}, "authData": self._data(True)})
+        return ({"id": b64(self.id), "rawId": b64(self.id), "type": "public-key",
+                 "response": {"clientDataJSON": b64(client), "attestationObject": b64(made)},
+                 "clientExtensionResults": {}}, self._prf(options))
+
+    def get(self, options) -> tuple[dict, str | None]:
+        client, data = self._client("webauthn.get", options["challenge"]), self._data(False)
+        signed = self.key.sign(data + hashlib.sha256(client).digest(), ec.ECDSA(hashes.SHA256()))
+        return ({"id": b64(self.id), "rawId": b64(self.id), "type": "public-key",
+                 "response": {"clientDataJSON": b64(client), "authenticatorData": b64(data), "signature": b64(signed)},
+                 "clientExtensionResults": {}}, self._prf(options))
+
+
+def add_passkey(http: TestClient, phone: Authenticator) -> dict:
+    made, prf = phone.create(http.post("/api/passkey/add-options", json={}, headers=JSON).json())
+    return http.post("/api/passkey/add", json={"credential": made, "prf": prf}, headers=JSON).json()
+
+
+def passkey_sign_in(http: TestClient, phone: Authenticator):
+    used, prf = phone.get(http.post("/api/passkey/sign-in-options", json={}, headers=JSON).json())
+    return http.post("/api/passkey/sign-in", json={"credential": used, "prf": prf}, headers=JSON)
+
+
+def test_from_an_invite_to_a_passkey_and_a_recovery_code_with_no_ai(store, pages, keys):
+    """Someone with no AI opens an invite, starts on the web, adds a passkey and gets a recovery code; on a new
+    device each signs them back in as the same person, holding their key, and a used recovery code is replaced."""
+    world = World(store)
+    keys.clear()
+    first = browser(store, pages)
+    assert first.post("/api/invite", headers=JSON).status_code == 405
+    assert first.get("/api/invite", params={"code": world.invite}).json() == {"name": "Friends", "small": True}
+    started = first.post("/api/start", json={"invite": world.invite}, headers=JSON)
+    assert started.status_code == 200 and "set-cookie" in started.headers
+    assert [c["name"] for c in first.get("/api/waiting").json()["me"]["communities"]] == ["Friends"]
+    first.post("/api/setup", json={"name": "Kim Lee"}, headers=JSON)
+    phone = Authenticator()
+    assert add_passkey(first, phone) == {"opens": True}
+    code = first.post("/api/recovery", json={}, headers=JSON).json()["code"]
+    assert first.get("/api/ways-in").json()["recovery"] is True
+    second = browser(store, pages)
+    assert passkey_sign_in(second, phone).status_code == 200
+    assert second.get("/api/waiting").json()["me"]["name"] == "Kim Lee"
+    third = browser(store, pages)
+    back = third.post("/api/recovery/sign-in", json={"code": code}, headers=JSON).json()
+    assert back["signed_in"] and back["recovery"] != code
+    assert third.get("/api/waiting").json()["me"]["name"] == "Kim Lee"
+    assert browser(store, pages).post("/api/recovery/sign-in", json={"code": code}, headers=JSON).status_code == 400
+
+
+def test_a_passkey_with_no_prf_opens_nothing_until_it_gives_one(store, pages, keys):
+    """A password manager without PRF: the passkey is added but cannot sign in, and the refusal points at the
+    recovery code; once a later use gives the secret, it signs in."""
+    world = World(store)
+    ola, _ = world.pair()
+    http = signed_in(store, pages, ola)
+    keys.clear()
+    phone = Authenticator(prf=False)
+    assert add_passkey(http, phone) == {"opens": False}
+    refused = passkey_sign_in(browser(store, pages), phone)
+    assert refused.status_code == 400 and "recovery code" in refused.json()["refused"]
+    phone.prf = True
+    options = http.post("/api/passkey/key-options", json={"id": b64(phone.id)}, headers=JSON).json()
+    used, prf = phone.get(options)
+    assert http.post("/api/passkey/key", json={"credential": used, "prf": prf}, headers=JSON).json() == {"opens": True}
+    assert passkey_sign_in(browser(store, pages), phone).status_code == 200
+
+
+def test_a_passkey_answer_that_does_not_check_out_signs_nobody_in(store, pages, keys):
+    """Another site's answer, one made without verifying the person, a challenge used twice, a wrong PRF secret, or
+    a passkey nobody added: each is refused, and no cookie is set."""
+    world = World(store)
+    ola, _ = world.pair()
+    http = signed_in(store, pages, ola)
+    keys.clear()
+    phone = Authenticator()
+    add_passkey(http, phone)
+    elsewhere = Authenticator()
+    elsewhere.key, elsewhere.id, elsewhere.secret, elsewhere.origin = phone.key, phone.id, phone.secret, \
+        "https://evil.test"
+    unverified = Authenticator()
+    unverified.key, unverified.id, unverified.secret, unverified.flags = phone.key, phone.id, phone.secret, 0x01
+    for who in (elsewhere, unverified, Authenticator()):
+        answer = passkey_sign_in(browser(store, pages), who)
+        assert answer.status_code in (400, 404) and "set-cookie" not in answer.headers
+    fresh = browser(store, pages)
+    used, prf = phone.get(fresh.post("/api/passkey/sign-in-options", json={}, headers=JSON).json())
+    assert fresh.post("/api/passkey/sign-in", json={"credential": used, "prf": b64(b"x" * 32)},
+                      headers=JSON).status_code == 400
+    assert fresh.post("/api/passkey/sign-in", json={"credential": used, "prf": prf}, headers=JSON).status_code == 400
+
+
+def test_starting_while_signed_in_joins_as_the_same_person(store, pages):
+    world = World(store)
+    ola, _ = world.pair()
+    other, invite = net.create_community(store, world.owner, "Climbers")
+    http = signed_in(store, pages, ola)
+    answer = http.post("/api/start", json={"invite": invite}, headers=JSON)
+    assert answer.status_code == 200 and answer.json()["joined"]["name"] == "Climbers"
+    assert "set-cookie" not in answer.headers or "max-age=0" not in answer.headers["set-cookie"].lower()
+    assert net.is_member(store, ola, other)
+    assert browser(store, pages).post("/api/start", json={}, headers={"origin": "https://evil.test"}).status_code == 403
 
 
 # -- from the security review ----------------------------------------------------------------------------------

@@ -546,28 +546,28 @@ def _passkey_key(prf: bytes) -> bytes:
     return vault.from_secret(vault.encode(prf), "passkey")
 
 
-def passkey_challenge(store: Store, purpose: str, person_id: str = "") -> str:
+def passkey_challenge(store: Store, purpose: str, person_id: str = "", **kept: str) -> str:
     """A WebAuthn challenge, base64url, for one use within minutes: to add a passkey (`person_id`'s), to give one a
-    key, or to sign in."""
+    key, or to sign in. `kept`: what the ceremony's second half needs back (the user handle it was offered)."""
     challenge = vault.encode(secrets.token_bytes(32))
     with store.transaction():
         if person_id:
             _acting(store, person_id)
-        _token(store, "passkey", data={"purpose": purpose, "person": person_id}, token=challenge,
+        _token(store, "passkey", data={**kept, "purpose": purpose, "person": person_id}, token=challenge,
                expires_t=store.now() + PASSKEY_CHALLENGE_S)
     return challenge
 
 
-def take_passkey_challenge(store: Store, challenge: str, purpose: str, person_id: str = "") -> bool:
-    """Whether the server gave this challenge, for this, to this person, and it is unused and unexpired; used up
-    either way."""
+def take_passkey_challenge(store: Store, challenge: str, purpose: str, person_id: str = "") -> dict | None:
+    """What was kept with this challenge, if the server gave it, for this, to this person, and it is unused and
+    unexpired; None otherwise. Used up either way."""
     with store.transaction():
         row = _live_token(store, challenge, "passkey")
         if not row:
-            return False
+            return None
         store.exec("DELETE FROM tokens WHERE hash=?", row["hash"])
         data = json.loads(row["data"])
-        return data.get("purpose") == purpose and data.get("person", "") == person_id
+        return data if data.get("purpose") == purpose and data.get("person", "") == person_id else None
 
 
 def passkey_handle(store: Store, person_id: str) -> str:
@@ -786,7 +786,14 @@ APP_RETURNS = {"claude": ("claude.ai", "claude.com"), "chatgpt": ("chatgpt.com",
 def clientHost(store: Store, grant_id: str) -> str:
     """Which app a connection signed in from, by where its sign-in returns: "claude", "chatgpt", or "" for any other,
     so that what only one app does is said only to that app."""
-    row = store.one("SELECT c.info FROM grants g JOIN clients c ON c.id=g.client_id WHERE g.id=?", grant_id)
+    row = store.one("SELECT client_id FROM grants WHERE id=?", grant_id)
+    return knownApp(store, row["client_id"]) if row else ""
+
+
+def knownApp(store: Store, client_id: str) -> str:
+    """"claude" or "chatgpt" when every address an app's sign-in may return to is that app's own, else "": never by
+    the name an app gives itself, which anyone may choose."""
+    row = store.one("SELECT info FROM clients WHERE id=?", client_id)
     try:
         uris = (json.loads(row["info"]).get("redirect_uris") or []) if row else []
     except (ValueError, AttributeError):

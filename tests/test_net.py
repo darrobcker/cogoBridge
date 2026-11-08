@@ -2400,14 +2400,15 @@ def test_a_broken_connection_never_starts_over_someone_a_passkey_still_opens(wor
 def test_a_passkey_challenge_is_for_one_use_one_purpose_and_one_person(world, store, clock):
     ola, rae = world.pair()
     challenge = net.passkey_challenge(store, "add", ola)
-    assert not net.take_passkey_challenge(store, challenge, "add", rae)
-    assert not net.take_passkey_challenge(store, challenge, "add", ola)                   # used up by the try
+    assert net.take_passkey_challenge(store, challenge, "add", rae) is None
+    assert net.take_passkey_challenge(store, challenge, "add", ola) is None               # used up by the try
     later = net.passkey_challenge(store, "sign-in")
-    assert not net.take_passkey_challenge(store, later, "add")
+    assert net.take_passkey_challenge(store, later, "add") is None
     stale = net.passkey_challenge(store, "sign-in")
     clock.advance(net.PASSKEY_CHALLENGE_S + 1)
-    assert not net.take_passkey_challenge(store, stale, "sign-in")
-    assert net.take_passkey_challenge(store, net.passkey_challenge(store, "sign-in"), "sign-in")
+    assert net.take_passkey_challenge(store, stale, "sign-in") is None
+    kept = net.take_passkey_challenge(store, net.passkey_challenge(store, "sign-in", handle="h"), "sign-in")
+    assert kept["handle"] == "h"
 
 
 def test_a_database_from_before_passkeys_gains_their_tables(tmp_path):
