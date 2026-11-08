@@ -205,6 +205,40 @@ def test_the_cookie_is_no_bearer_token_for_mcp(store, pages):
     assert answer.status_code == 401
 
 
+def test_a_code_for_another_app_signs_the_browser_in_too(store, pages, monkeypatch):
+    """From the chat: `setup` with another_app gives a code, and, where the server serves the web client, a link
+    with the code after "#" that the page signs in with only once its person presses Continue."""
+    import socket
+    import threading
+    import time
+
+    import uvicorn
+    from test_surface import call, sign_in
+    store.set_clock(time.time)
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+    base = f"http://127.0.0.1:{port}"
+    server = uvicorn.Server(uvicorn.Config(create_app(store, base_url=base, site=str(pages)), host="127.0.0.1",
+                                           port=port, log_level="warning"))
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+    while not server.started:
+        time.sleep(0.02)
+    try:
+        _, invite = net.create_community(store, net.new_person(store), "Friends")
+        with TestClient(create_app(store, base_url=base, site=str(pages)), base_url=base) as http:
+            app = sign_in(http, base, invite)
+            call(app, "setup", name="Ola Mensah")
+            answer = call(app, "setup", another_app=True)
+            code = re.search(rf"{re.escape(base)}/view/#code=([a-z2-9-]+)", answer).group(1)
+            assert http.post("/api/sign-in", json={"code": code}, headers={"origin": base}).status_code == 200
+            assert http.get("/api/waiting").json()["me"]["name"] == "Ola Mensah"
+    finally:
+        server.should_exit = True
+        thread.join(timeout=5)
+
+
 # -- the client's own files ----------------------------------------------------------------------------------------
 
 def test_only_the_clients_pages_are_served_and_inline_scripts_run_by_hash(store, pages):

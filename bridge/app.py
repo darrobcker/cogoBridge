@@ -39,7 +39,8 @@ def create_app(store: Store, *, base_url: str, operator: str = "", site: str = "
     base = base_url.rstrip("/")
     # One MCP app answers both doors: who is calling is read from each request, never from its session. So it keeps
     # none: a deploy's restart no longer ends every app's session, and each answer is plain JSON, not a stream.
-    mcp_app = _PostOnly(create_mcp(store, base_url=base, operator=operator, version=_version()).streamable_http_app(
+    mcp_app = _PostOnly(create_mcp(store, base_url=base, operator=operator, version=_version(),
+                                    site=bool(site)).streamable_http_app(
         streamable_http_path="/mcp", host="0.0.0.0", stateless_http=True, json_response=True))
     provider = Provider(store, base)
     # Through AuthSettings, which keeps a bare host without the "/" pydantic adds: issuers are compared exactly.

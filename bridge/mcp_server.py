@@ -521,9 +521,10 @@ def _refusals(fn):
     return wrapper
 
 
-def create_mcp(store: Store, *, base_url: str, operator: str = "", version: str = "") -> MCPServer:
+def create_mcp(store: Store, *, base_url: str, operator: str = "", version: str = "", site: bool = False) -> MCPServer:
     """`operator` is named to every assistant: asked who runs the server, one could not say (diary study). `version`:
-    the commit, told to each app, so a report can say which server it met."""
+    the commit, told to each app, so a report can say which server it met. `site`: this server serves the web client,
+    where a code from `another_app` signs a browser in too (PROTOCOL.md §5)."""
     # The tool list and what the server offers are the same for everyone and change only with a deploy: an app may
     # keep them an hour, and share them across people, instead of asking again at every connection.
     kept = CacheHint(ttl_ms=3_600_000, scope="public")
@@ -666,8 +667,12 @@ def create_mcp(store: Store, *, base_url: str, operator: str = "", version: str 
                     f"working.{after}")
         if another_app:
             fresh = net.link_code(store, pid, replace=False)
+            # The code after "#", so no server or log on the way sees it; and opening the link uses nothing up,
+            # since chat apps open links to preview them: only Continue on the page does.
+            web = (f" Or, for Bridge on the web: {base_url}/view/#code={fresh} — opening it does nothing until "
+                   "they press Continue there." if site else "")
             return (f"{linked}Code for another app: {fresh}. Give it to your person, in this chat only: "
-                    f"{_code_steps(fresh)} This app keeps working as well.{after}")
+                    f"{_code_steps(fresh)} This app keeps working as well.{web}{after}")
         # Only the first time: repeated on every later setup, it asked again what the notes already said (diary).
         return (f"{linked}Saved. Name: {said(me['name'], label=False) if me['name'] else '(none)'}. "
                 f"Contact: {said(me['contact'], label=False) if me['contact'] else '(none)'}. "

@@ -17,8 +17,10 @@ For coding agents and new contributors. Read `PROTOCOL.md` first: it is short, a
 | `bridge/oauth.py` | Sign-in: the MCP SDK's OAuth server, answered from `net`, where its rules are |
 | `bridge/notify.py` | Wake-ups: the ntfy.sh nudge, and MCP Events signed to the apps that subscribed |
 | `bridge/app.py`, `cli.py` | ASGI wiring; operator commands |
+| `bridge/demo.py` | `bridge demo`: a new scratch home of made-up people in every state, for working on the web client; `bridge serve --dev` signs in as them, on this machine only |
 | `tests/test_net.py` | One section per protocol rule. Reproductions from audits and simulations live here |
 | `tests/test_surface.py` | MCP over a real port, signed in as a real client would; the pages |
+| `tests/test_site.py` | The web client through a browser: signing in, every operation over /api, the client's own files |
 | `tests/test_ops.py` | The operator's scripts, against a scratch home and a throwaway repository |
 | `docs/DESIGN.md` | Why it is shaped this way, what was measured, what it does not fix |
 | `docs/HOSTS.md` | What ChatGPT, Claude and Gemini let a connector do. Dated; re-verify before relying on it |
