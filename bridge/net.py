@@ -52,6 +52,8 @@ AUTH_CODE_S = 300                 # an authorization code, between Allow and the
 LINK_CODE_S = 3600                # a code from the chat that joins another connection to its person
 LINK_CODE = 12                    # characters (59 bits) of one, typed by hand from one app into another
 SITE = "site"                     # the client every web client connection is made for: no app can register or use it
+SITE_SIGN_INS_PER_DAY = 20        # browsers one person may sign in a day: each is a connection kept until it ends
+SITE_SIGN_INS_ALL_PER_DAY = 5000  # and everyone's, as Allow's are capped
 WAKE_S = 30 * 86400               # the longest an app's subscription to be woken lasts before it renews it
 ESCROW_S = 14 * 86400             # a key from before locks waits this long for its person's connections to copy it
 YES_WAITS_S = 3 * 86400           # a yes waits this long for its person to confirm it on their yes page
@@ -432,6 +434,13 @@ def site_sign_in(store: Store, code: str) -> str:
         if not row or row["deleted_t"] is not None:
             raise dead
         person_id = row["person_id"]
+        # Each sign-in is a connection kept until it ends: a code and a sign-in over and over would keep making
+        # them (security review).
+        if (_today(store, f"site {person_id}") >= SITE_SIGN_INS_PER_DAY
+                or _today(store, "site sign-ins") >= SITE_SIGN_INS_ALL_PER_DAY):
+            raise Refused("too many web sign-ins today; try again tomorrow")
+        _count(store, f"site {person_id}")
+        _count(store, "site sign-ins")
         typed = "".join(ch for ch in code.lower() if ch in _ALPHABET)
         theirs = vault.unlock(vault.from_code(typed, "link code", person_id), row["person_key"], "person key") \
             if row["person_key"] else None
@@ -1936,9 +1945,10 @@ def revokeYes(store: Store, link: str, yes_id: str) -> str:
                                                      yes["conversation_id"]))
 
 
-def yesPage(store: Store, link: str) -> list[dict] | None:
+def yesPage(store: Store, link: str, *, limit: int = -1) -> list[dict] | None:
     """Everything a yes page shows, opened with its link alone: each yes its person gave, newest first, what it is
-    now, and what they were shown of it. None for a link that is not one."""
+    now, and what they were shown of it. None for a link that is not one. `limit`: only the newest so many (the web
+    client's list, which two people could otherwise grow without end: security review)."""
     row = store.one("SELECT y.* FROM yes_pages y JOIN people p ON p.id=y.person_id AND p.deleted_t IS NULL "
                     "WHERE y.link_hash=?", _yesHash(link or ""))
     if not row:
@@ -1949,8 +1959,8 @@ def yesPage(store: Store, link: str) -> list[dict] | None:
         return None
     out = []
     with store.transaction():               # one moment: a yes read apart from its conversation could be both
-        for yes in store.all("SELECT * FROM yeses WHERE person_id=? ORDER BY created_t DESC, rowid DESC",
-                             row["person_id"]):
+        for yes in store.all("SELECT * FROM yeses WHERE person_id=? ORDER BY created_t DESC, rowid DESC LIMIT ?",
+                             row["person_id"], limit):
             try:
                 shown = json.loads(vault.unlock_text(key, yes["shown"], "yes shown") or "{}")
             except (vault.Locked, ValueError):

@@ -45,6 +45,13 @@ def cmd_serve(args) -> None:
     store.on_nudge = notify.send    # only for people who asked for nudges, and apps that asked to be woken
     store.on_wake = lambda sub: notify.wake(sub, net.WAITING, lambda: net.drop_subscription(store, sub["id"]))
     url = os.environ.get("BRIDGE_BASE_URL") or f"http://127.0.0.1:{args.port}"
+    site = args.site or os.environ.get("BRIDGE_SITE", "")
+    if site and not (Path(site) / "index.html").is_file():
+        sys.exit(f"bridge serve: --site {site} has no index.html")
+    # Before anything starts, a tunnel above all: the demo sign-in lets anyone be anyone (security review).
+    if args.dev and (args.hostname or args.tunnel or not _on_this_machine(url, args.host)):
+        sys.exit("bridge serve --dev runs only at http://127.0.0.1 or http://localhost, bound to 127.0.0.1, "
+                 "with no tunnel")
     if args.hostname:
         # A named Cloudflare tunnel gives a stable URL. Once, beforehand:
         # `cloudflared tunnel create <name>` and `cloudflared tunnel route dns <name> <hostname>`.
@@ -59,12 +66,6 @@ def cmd_serve(args) -> None:
     print(f"Bridge: {url}", file=sys.stderr)
     pages = {key: os.environ.get(f"BRIDGE_{key.upper()}", "")
              for key in ("claude_listing", "chatgpt_listing", "contact", "openai_challenge", "theme", "source")}
-    site = args.site or os.environ.get("BRIDGE_SITE", "")
-    if site and not (Path(site) / "index.html").is_file():
-        sys.exit(f"bridge serve: --site {site} has no index.html")
-    if args.dev and not _on_this_machine(url, args.host):
-        # Its demo sign-in lets anyone be anyone: never on an address another machine can reach.
-        sys.exit("bridge serve --dev runs only at http://127.0.0.1 or http://localhost, bound to 127.0.0.1")
     app = create_app(store, base_url=url, operator=os.environ.get("BRIDGE_OPERATOR", ""), site=site, dev=args.dev,
                      dev_sessions=HOME / "demo-sessions.json" if args.dev else None, **pages)
     # No access log: the older connector links carry their secret in the URL, and sign-in its request.

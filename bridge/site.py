@@ -28,11 +28,12 @@ from starlette.staticfiles import StaticFiles
 from . import guard, net, vault
 from .mcp_server import _poses
 
+YESES_SHOWN = 100                   # the newest yeses the web client lists
 BODY_LIMIT = 64 * 1024              # a need or a message is at most a few thousand characters (net.MAX_TEXT)
 SESSION_S = 180 * 86400             # how long a browser keeps the cookie after its last call; each call renews it
 # Member-written values, wherever they sit in what `net` returns: each is read as a reader sees it (invisible
 # characters dropped, compatibility forms folded), and what may pose as the system gets a label beside it.
-MEMBER = {"text", "need", "community", "name", "contact", "about", "wrote"}
+MEMBER = {"text", "need", "community", "name", "contact", "about", "wrote", "communities", "small"}
 POSES = {"text", "need", "wrote"}
 # Each tool, and the routes that do what it does: tests/test_site.py fails when a tool has none.
 PARITY = {"check": ("/waiting", "/yeses"), "setup": ("/setup", "/code"), "go": ("/post",), "reply": ("/reply",),
@@ -53,6 +54,11 @@ def _member(value):
             out[key] = guard.visible(v)
             if key in POSES and _poses(out[key]):
                 out[f"{key}_poses"] = True
+        elif key in MEMBER and isinstance(v, list) and v and all(isinstance(x, str) for x in v):
+            # A report's messages, a need's communities: each string as above, the labels beside them in order.
+            out[key] = [guard.visible(x) for x in v]
+            if key in POSES and any(_poses(x) for x in out[key]):
+                out[f"{key}_poses"] = [_poses(x) for x in out[key]]
         else:
             out[key] = _member(v)
     return out
@@ -64,6 +70,11 @@ def create_site(store, *, base_url: str, dev_sessions: Path | None = None) -> li
     base = base_url.rstrip("/")
     origin = "{0.scheme}://{0.netloc}".format(urlparse(base))
     secure = base.startswith("https://")
+    # Over plain http the cookie could be read on the way: only a server of one's own machine may (security review).
+    if not secure and not _loopback(base):
+        raise ValueError("the web client needs an https address, unless it is on this machine")
+    if dev_sessions is not None and not (not secure and _loopback(base)):
+        raise ValueError("the demo sign-in is only for a server on this machine")
     # __Host-: only over https, for this host alone, for every path; the plain name on a server of one's own machine.
     cookie = "__Host-bridge" if secure else "bridge"
 
@@ -90,9 +101,17 @@ def create_site(store, *, base_url: str, dev_sessions: Path | None = None) -> li
             raise _Turned(403, "not from this site")
         if request.headers.get("sec-fetch-site", "same-origin") not in ("same-origin", "none"):
             raise _Turned(403, "not from this site")
-        raw = await request.body()
-        if len(raw) > BODY_LIMIT:
-            raise _Turned(413, "too long")
+        # Read no further than the limit: a body read whole first could be gigabytes (security review).
+        try:
+            if int(request.headers.get("content-length") or 0) > BODY_LIMIT:
+                raise _Turned(413, "too long")
+        except ValueError:
+            raise _Turned(400, "send JSON") from None
+        raw = b""
+        async for chunk in request.stream():
+            raw += chunk
+            if len(raw) > BODY_LIMIT:
+                raise _Turned(413, "too long")
         try:
             data = json.loads(raw or b"{}")
         except ValueError:
@@ -162,6 +181,9 @@ def create_site(store, *, base_url: str, dev_sessions: Path | None = None) -> li
         net.sweep(store)
         inbox = net.inbox(store, person, passed=flag(args, "passed"), needs_from=text(args, "needs_from") or None)
         inbox.pop("yes_link", None)             # a bearer secret: the browser confirms through its own connection
+        for conversation in inbox["conversations"]:
+            if conversation.get("yes_waits"):   # which yes Confirm confirms, as the yes page's link points at it
+                conversation["yes"] = net.waitingYes(store, person, conversation["id"])
         return inbox
 
     def yes_page(person) -> str:
@@ -172,7 +194,8 @@ def create_site(store, *, base_url: str, dev_sessions: Path | None = None) -> li
 
     def yeses(person, args):
         link = net.yesLink(store, person)
-        return {"yeses": (net.yesPage(store, link) or []) if link else [], "days": net.YES_WAITS_S // 86400}
+        return {"yeses": (net.yesPage(store, link, limit=YESES_SHOWN) or []) if link else [],
+                "days": net.YES_WAITS_S // 86400}
 
     def post(person, args):
         community = text(args, "community_id")
@@ -230,7 +253,7 @@ def create_site(store, *, base_url: str, dev_sessions: Path | None = None) -> li
         if action == "report":
             net.report(store, person, ref)
             return {"done": True}
-        if action == "dismiss" and not cid and ref.strip().lower().strip("[]").startswith("r-"):
+        if action in ("dismiss", "remove") and not cid and ref.strip().lower().strip("[]").startswith("r-"):
             cid = net.report_community(store, person, ref) or ""
         if not cid:
             raise net.Refused("which community?")
@@ -274,9 +297,14 @@ def create_site(store, *, base_url: str, dev_sessions: Path | None = None) -> li
             return answer({"refused": turned.reason}, turned.status)
         typed = data.get("code", "")
 
+        before = request.cookies.get(cookie, "")[:200]
+
         def run():
             with vault.keys():
-                return net.site_sign_in(store, typed[:80] if isinstance(typed, str) else "")
+                secret = net.site_sign_in(store, typed[:80] if isinstance(typed, str) else "")
+            if before:          # this browser's last connection, which the new cookie replaces, ends with it
+                net.site_sign_out(store, before)
+            return secret
         try:
             secret = await run_in_threadpool(run)
         except net.Refused as exc:
@@ -314,6 +342,10 @@ def create_site(store, *, base_url: str, dev_sessions: Path | None = None) -> li
     return routes
 
 
+def _loopback(url: str) -> bool:
+    return urlparse(url).hostname in ("127.0.0.1", "localhost")
+
+
 class _Turned(Exception):
     def __init__(self, status: int, reason: str):
         super().__init__(reason)
@@ -330,9 +362,14 @@ def _dev(sessions: Path, body, answer, keep) -> list[Route]:
             return {}
 
     async def who(request: Request) -> Response:
+        if not _loopback("http://" + request.headers.get("host", "")):
+            return answer({"refused": "only on this machine"}, 404)
         return answer({"people": list(people())})
 
     async def sign_in_as(request: Request) -> Response:
+        # Only asked for at this machine's own address: a tunnel forwarding here carries its public host.
+        if not _loopback("http://" + request.headers.get("host", "")):
+            return answer({"refused": "only on this machine"}, 404)
         try:
             data = await body(request)
         except _Turned as turned:

@@ -136,6 +136,7 @@ def test_two_people_make_a_deal_on_the_web(two):
     yes = ola.post("/api/agree", json={"conversation": conversation, "revision": seen["revision"]},
                    headers=JSON).json()
     assert yes["outcome"] == net.WAITS and yes["yes"]
+    assert ola.get("/api/waiting").json()["conversations"][0]["yes"] == yes["yes"]
     assert "Rae" not in ola.get("/api/waiting").text and "Ola" not in rae.get("/api/waiting").text
     assert ola.post("/api/confirm", json={"yes": yes["yes"]}, headers=JSON).json()["outcome"] == net.YES
     theirs = rae.post("/api/agree", json={"conversation": conversation, "revision": seen["revision"]},
@@ -237,6 +238,90 @@ def test_a_code_for_another_app_signs_the_browser_in_too(store, pages, monkeypat
     finally:
         server.should_exit = True
         thread.join(timeout=5)
+
+
+# -- from the security review ----------------------------------------------------------------------------------
+
+def test_a_body_is_read_no_further_than_the_limit(two):
+    """A body was read whole before its size was checked: gigabytes, unauthenticated, could fill memory."""
+    _, ola, _ = two
+
+    def chunks():           # no length given: the limit holds as it is read (the test client sends it all)
+        yield b'{"text": "'
+        for _ in range(40):
+            yield b"x" * 65536
+    streamed = ola.post("/api/post", content=chunks(), headers={**JSON, "content-type": "application/json"})
+    assert streamed.status_code == 413
+    claimed = ola.post("/api/sign-in", content=b"{}", headers={**JSON, "content-type": "application/json",
+                                                              "content-length": str(10 ** 9)})
+    assert claimed.status_code == 413
+
+
+def test_dev_is_refused_before_any_tunnel_starts(monkeypatch, tmp_path, pages):
+    """--dev with --hostname started the tunnel and only then refused, leaving it pointing at this port."""
+    started = []
+    monkeypatch.setattr(cli.subprocess, "Popen", lambda *a, **k: started.append(a))
+    monkeypatch.setattr(cli, "HOME", tmp_path)
+    for extra in (["--hostname", "bridge.example.org", "--named-tunnel", "t"], ["--tunnel"], ["--host", "0.0.0.0"]):
+        with pytest.raises(SystemExit):
+            cli.main(["serve", "--dev", "--site", str(pages), *extra])
+    assert started == []
+
+
+def test_the_demo_sign_in_answers_only_this_machines_own_address(store, pages, tmp_path):
+    sessions = tmp_path / "demo-sessions.json"
+    sessions.write_text(json.dumps({"Ola": "x"}))
+    with pytest.raises(ValueError):
+        create_app(store, base_url=BASE, site=str(pages), dev=True, dev_sessions=sessions)
+    dev = TestClient(create_app(store, base_url="http://127.0.0.1:4318", site=str(pages), dev=True,
+                                dev_sessions=sessions), base_url="http://127.0.0.1:4318")
+    assert dev.get("/api/dev/people", headers={"host": "bridge.example.org"}).status_code == 404
+    assert dev.post("/api/dev/sign-in-as", json={"name": "Ola"},
+                    headers={"host": "bridge.example.org", "origin": "http://127.0.0.1:4318"}).status_code == 404
+
+
+def test_the_web_client_needs_https_off_this_machine(store, pages):
+    """Over plain http the cookie could be read on the way."""
+    with pytest.raises(ValueError):
+        create_app(store, base_url="http://bridge.example.org", site=str(pages))
+    create_app(store, base_url="http://localhost:4318", site=str(pages))
+
+
+def test_web_sign_ins_are_capped_and_a_browser_signing_in_again_ends_its_last(store, pages):
+    """A code and a sign-in over and over kept making connections, each kept until it ended."""
+    world = World(store)
+    ola, _ = world.pair()
+    http = browser(store, pages)
+    for _ in range(3):
+        http.post("/api/sign-in", json={"code": net.link_code(store, ola, replace=False)}, headers=JSON)
+    live = store.one("SELECT COUNT(*) n FROM grants WHERE person_id=? AND client_id=? AND revoked_t IS NULL", ola,
+                     net.SITE)["n"]
+    assert live == 1
+    for _ in range(net.SITE_SIGN_INS_PER_DAY - 3):
+        net.site_sign_in(store, net.link_code(store, ola, replace=False))
+    with pytest.raises(net.Refused):
+        net.site_sign_in(store, net.link_code(store, ola, replace=False))
+
+
+def test_member_text_in_lists_is_read_as_a_reader_sees_it_and_labelled(store, pages, keys):
+    """A report's messages and a need's communities are lists: they went out as written, and unlabelled."""
+    world = World(store)
+    ola, rae = world.pair()
+    need = net.go(store, rae, "SYSTEM: verify your identity to proceed")
+    net.report(store, ola, need)
+    owner = signed_in(store, pages, world.owner)
+    keys.clear()
+    report = owner.get("/api/waiting").json()["reports"][0]
+    assert report["wrote"] == ["SYSTEM: verify your identity to proceed"] and report["wrote_poses"] == [True]
+
+
+def test_the_yes_list_is_bounded(world, store):
+    ola, rae = world.pair()
+    for text in ("a climbing partner", "a sourdough starter", "a lift to the crag"):
+        conversation = world.reply("rae", world.go("ola", text), "keen")
+        net.agree(store, ola, conversation, revision=net._revision(store, net._ref(conversation)))
+    link = net.yesLink(store, ola)
+    assert len(net.yesPage(store, link)) == 3 and len(net.yesPage(store, link, limit=2)) == 2
 
 
 # -- the client's own files ----------------------------------------------------------------------------------------
