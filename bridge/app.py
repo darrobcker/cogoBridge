@@ -1,6 +1,7 @@
 """One ASGI app: the pages at /, sign-in, everyone's assistant at /mcp, and the older own links at /c/<secret>/mcp."""
 from __future__ import annotations
 
+from pathlib import Path
 from urllib.parse import parse_qs, parse_qsl, urlencode, urlparse, urlunparse
 
 from mcp.server.auth.handlers.metadata import MetadataHandler
@@ -24,14 +25,17 @@ from starlette.routing import Mount, Route
 
 from .mcp_server import create_mcp
 from .oauth import SCOPE, Provider
+from .site import create_site
 from .store import Store
 from .web import _version
 from .web import create_app as create_web
 
 
-def create_app(store: Store, *, base_url: str, operator: str = "", **site: str) -> Starlette:
-    """`site`: what the pages say beyond the server's own state (`web.create_app`), such as Bridge's page in each
-    app's directory once it has one."""
+def create_app(store: Store, *, base_url: str, operator: str = "", site: str = "", dev: bool = False,
+               dev_sessions: Path | None = None, **pages: str) -> Starlette:
+    """`pages`: what the pages say beyond the server's own state (`web.create_app`), such as Bridge's page in each
+    app's directory once it has one. `site`: the web client's directory, served with its API at /api
+    (`site.py`); `dev` and `dev_sessions` only for a server on this machine (`bridge serve --dev`)."""
     base = base_url.rstrip("/")
     # One MCP app answers both doors: who is calling is read from each request, never from its session. So it keeps
     # none: a deploy's restart no longer ends every app's session, and each answer is plain JSON, not a stream.
@@ -66,7 +70,9 @@ def create_app(store: Store, *, base_url: str, operator: str = "", **site: str) 
         Route("/.well-known/oauth-protected-resource", endpoint=metadata[0].endpoint, methods=["GET", "OPTIONS"]),
         Route("/mcp", endpoint=signed_in),
         Mount("/c/{secret}", app=mcp_app),
-        Mount("/", app=create_web(store, base_url=base, operator=operator, **site)),
+        *([Mount("/api", routes=create_site(store, base_url=base, dev_sessions=dev_sessions if dev else None))]
+          if site else []),
+        Mount("/", app=create_web(store, base_url=base, operator=operator, site=site, dev=dev, **pages)),
     ]
     middleware = [Middleware(_OneHost, www=f"www.{urlparse(base).hostname}", base=base),
                   Middleware(_Issuer, issuer=str(issuer)),

@@ -1,4 +1,4 @@
-# The Bridge protocol — draft 0.10
+# The Bridge protocol — draft 0.11
 
 How people's own AI assistants find each other something worth doing, without anyone being named until
 everyone involved says yes. This document is normative: an implementation that follows it interoperates with any
@@ -16,6 +16,8 @@ The words MUST, MUST NOT, SHOULD and MAY are used as in RFC 2119.
 - **Assistant** — the person's own AI (any that can call tools). It acts *as* its person, when its person asks,
   and has no identity of its own. Every judgment — what fits, what to say, what to walk away from — is the
   assistant's; the protocol constrains only what may be revealed, and a yes is confirmed by the person (§3 rule 5).
+- **Web client** — the server's own pages, where a person acts themselves, signed in as one of their own
+  connections (§5). Everything an assistant may do for its person, the person may do there, under the same rules.
 - **Server** — carries needs and messages, records yeses. It runs no model and makes no judgments.
 - **Community** — a set of people who can reach each other. The only unit of reach: there is no global
   network. Two people or a million. Whoever starts one owns it.
@@ -66,7 +68,7 @@ the first.
 5. **Only the person can say yes, to what they saw, and they confirm it themselves.** An assistant MUST call
    `agree` only on its person's yes to that conversation. `agree` releases nothing: it records the yes as waiting
    and returns a link to the person's yes page, which the server hosts, and the yes counts only once its person
-   confirms it there. The server MUST NOT release a name or contact on an assistant's word alone. A yes is to the
+   confirms it there, or in the server's web client signed in as them (§5). The server MUST NOT release a name or contact on an assistant's word alone. A yes is to the
    conversation as it stands: it names the revision its person saw, and the server MUST refuse it, recording
    nothing, when anyone else has written since. It is also to who is in it: a yes given before someone went MUST NOT
    count, nor be confirmed. Every message clears every yes, waiting or confirmed; its writer is told when it cleared
@@ -203,6 +205,16 @@ erases the empty account it had made. `new_link` gives one too, and when it is u
 the person ends, the one that asked included: for when someone else may have had access, and to move off an
 older link. A brand-new connection that holds nothing asks its person whether they already use Bridge in
 another app, and how to bring the code over if so.
+
+**The web client.** A server MAY serve a web client, through which a person acts themselves. It signs in with a
+code from a connection the person already has (`setup` with `another_app`, or `new_link`, which keeps its meaning):
+used once, within an hour, it makes a new connection of that person, held by that browser. The server keeps its
+secret only as a hash, and the browser keeps it where the pages' scripts cannot read it (an HttpOnly, same-site
+cookie); it opens nothing through the MCP endpoint or the token endpoint. It is a connection like any other: it ends
+with the others at `new_link` and `forget_me`, and when its person signs out. Every operation in §4 is available
+through it, and the server MUST enforce the rules for both in one place. Member text reaches it only as data its
+pages render as text, never as markup, labelled as §3 rule 4 says. A yes given there is recorded as `agree`
+records one, and confirmed there with the press the yes page asks for.
 
 Earlier revisions gave each person a connector URL of their own, with a secret in it (`/c/<secret>/mcp`). A
 server MAY keep serving the ones it issued, and MUST NOT make anyone new through one.

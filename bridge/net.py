@@ -51,6 +51,7 @@ REQUEST_S = 900                   # a sign-in waiting on the Allow page
 AUTH_CODE_S = 300                 # an authorization code, between Allow and the app's token request
 LINK_CODE_S = 3600                # a code from the chat that joins another connection to its person
 LINK_CODE = 12                    # characters (59 bits) of one, typed by hand from one app into another
+SITE = "site"                     # the client every web client connection is made for: no app can register or use it
 WAKE_S = 30 * 86400               # the longest an app's subscription to be woken lasts before it renews it
 ESCROW_S = 14 * 86400             # a key from before locks waits this long for its person's connections to copy it
 YES_WAITS_S = 3 * 86400           # a yes waits this long for its person to confirm it on their yes page
@@ -410,6 +411,63 @@ def small(store: Store, community_id: str) -> bool:
                      community_id, SMALL)["n"] < SMALL
 
 
+# -- the web client: a connection a browser holds (PROTOCOL.md §5) ---------------------------------------------------
+
+def _site_key(secret: str) -> bytes:
+    """What a web client connection's copy of its person's key is locked under: the secret its browser keeps in a
+    cookie, which the server keeps only as a hash. Its own purpose, so it can never pass for an app's renewal token."""
+    return vault.from_secret(secret, "site connection")
+
+
+def site_sign_in(store: Store, code: str) -> str:
+    """The web client signing in with a code from a connection the person already has: a new connection of theirs,
+    held by that browser. A `new_link` code keeps its meaning: every other connection of theirs ends, and their yes
+    page gets a new link. Returns the connection's secret, for the browser alone; nothing else ever shows it."""
+    dead = Refused("that code does not work: it may be mistyped, used already, more than an hour old, or replaced by "
+                   "a newer one. Ask your AI for a fresh one.")
+    with store.transaction():
+        row = store.one("SELECT l.*, p.deleted_t FROM link_codes l JOIN people p ON p.id=l.person_id "
+                        "WHERE l.hash=? AND l.used_t IS NULL AND l.created_t>?", _code_hash(code),
+                        store.now() - LINK_CODE_S)
+        if not row or row["deleted_t"] is not None:
+            raise dead
+        person_id = row["person_id"]
+        typed = "".join(ch for ch in code.lower() if ch in _ALPHABET)
+        theirs = vault.unlock(vault.from_code(typed, "link code", person_id), row["person_key"], "person key") \
+            if row["person_key"] else None
+        store.exec("UPDATE link_codes SET used_t=? WHERE hash=?", store.now(), row["hash"])
+        if theirs is None:
+            theirs = _start_over(store, person_id)
+        vault.hold(person_id, theirs)
+        secret, grant = secrets.token_urlsafe(32), _new_id(store, "grants", "k", 16)
+        store.exec("INSERT INTO grants(id, client_id, person_id, created_t, person_key) VALUES (?,?,?,?,?)", grant,
+                   SITE, person_id, store.now(), vault.lock(_site_key(secret), theirs, "person key"))
+        _token(store, SITE, grant_id=grant, token=secret)
+        if row["replace"]:
+            _end_grants(store, "person_id=? AND id<>?", person_id, grant)
+            store.exec("UPDATE connectors SET revoked_t=? WHERE person_id=? AND revoked_t IS NULL", store.now(),
+                       person_id)
+            _moveYesPage(store, person_id)
+    return secret
+
+
+def person_for_site(store: Store, secret: str, tool: str) -> str:
+    """Whose web client connection a browser's secret is, with their key held for this call alone, and the call
+    logged. A secret that is not one, or whose connection ended, is NotYours."""
+    row = _live_token(store, secret, SITE) if secret else None
+    if not row or row["client_id"] != SITE:
+        raise NotYours()
+    return person_for_grant(store, row["grant_id"], tool, connection=_site_key(secret))
+
+
+def site_sign_out(store: Store, secret: str) -> None:
+    """Signing out ends that browser's connection; the person's others carry on."""
+    with store.transaction():
+        row = _live_token(store, secret, SITE) if secret else None
+        if row and row["client_id"] == SITE:
+            _end_grants(store, "id=?", row["grant_id"])
+
+
 def person_for_connector(store: Store, secret: str, tool: str, *, operator: str = "") -> str:
     """Whose connector URL this is, with the call logged. It never makes anyone. `operator` is whom to tell about a
     link that someone else ended."""
@@ -664,17 +722,19 @@ def _connection_from(store: Store, token: str) -> bytes | None:
     return vault.unlock(vault.from_secret(token, "access"), locked, "connection") if locked else None
 
 
-def person_for_grant(store: Store, grant_id: str, tool: str, token: str = "") -> str:
+def person_for_grant(store: Store, grant_id: str, tool: str, token: str = "", *,
+                     connection: bytes | None = None) -> str:
     """Whose connection this is, with the call logged. Its first call makes the person and joins the community of
     the invite it was allowed with, if that invite still works and the community still takes newcomers today; the
-    chat's `check` then says what is missing (PROTOCOL.md §5)."""
+    chat's `check` then says what is missing (PROTOCOL.md §5). `connection`: its key, when the call came with the
+    connection's own secret rather than an access token (the web client, `person_for_site`)."""
     with store.transaction():
         # LEFT JOIN, so a connection whose person row is gone refuses rather than resolving to nobody.
         g = store.one("SELECT g.*, p.id pid, p.deleted_t FROM grants g LEFT JOIN people p ON p.id=g.person_id "
                       "WHERE g.id=? AND g.revoked_t IS NULL", grant_id)
         if not g:
             raise NotYours()
-        connection = _connection_from(store, token)
+        connection = connection or _connection_from(store, token)
         if g["person_id"]:
             if g["pid"] is None or g["deleted_t"] is not None:
                 raise Refused(_DELETED)

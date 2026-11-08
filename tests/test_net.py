@@ -2223,6 +2223,92 @@ def test_an_apps_registration_outlasts_a_review_and_a_connection_lasts_while_its
     assert net.client(store, "submitted") is None and store.one("SELECT 1 FROM grants WHERE id=?", scanned) is None
 
 
+# -- the web client: a connection a browser holds (PROTOCOL.md §5) ------------------------------------------------
+
+def test_the_web_client_signs_in_with_a_code_and_opens_what_its_person_holds(world, store):
+    """A code from a connection the person already has makes a connection the browser holds, which opens their key
+    by itself: the call holds nothing else (invariant 8)."""
+    ola, _ = world.pair()
+    code = net.link_code(store, ola, replace=False)
+    with vault.keys():
+        secret = net.site_sign_in(store, code)
+    with vault.keys():
+        assert net.person_for_site(store, secret, "check") == ola
+        assert net.me(store, ola)["name"] == "Ola Mensah"
+        assert list(vault.held()) == [ola]
+
+
+def test_a_sign_in_code_works_once_within_the_hour(world, store, clock):
+    ola, _ = world.pair()
+    code = net.link_code(store, ola, replace=False)
+    net.site_sign_in(store, code)
+    for tried in (code, "abcd-efgh-jkmn", ""):
+        with pytest.raises(net.Refused):
+            net.site_sign_in(store, tried)
+    late = net.link_code(store, ola, replace=False)
+    clock.advance(net.LINK_CODE_S + 1)
+    with pytest.raises(net.Refused):
+        net.site_sign_in(store, late)
+
+
+def test_a_web_client_secret_opens_nothing_as_an_app_token(world, store):
+    """The cookie's secret is no renewal or access token: the token endpoint cannot turn it into an MCP bearer, and
+    no app can sign in as the web client's own client."""
+    ola, _ = world.pair()
+    secret = net.site_sign_in(store, net.link_code(store, ola, replace=False))
+    assert net.renewal(store, secret) is None and net.access(store, secret) is None
+    assert net.renew(store, secret) is None
+    assert net.client(store, net.SITE) is None
+    with pytest.raises(net.NotYours):
+        net.person_for_site(store, "not-a-secret", "check")
+
+
+def test_signing_out_ends_that_browser_alone(world, store):
+    ola, _ = world.pair()
+    here = net.site_sign_in(store, net.link_code(store, ola, replace=False))
+    there = net.site_sign_in(store, net.link_code(store, ola, replace=False))
+    net.site_sign_out(store, here)
+    with pytest.raises(net.NotYours):
+        net.person_for_site(store, here, "check")
+    assert net.person_for_site(store, there, "check") == ola
+    net.site_sign_out(store, here)                                   # twice, or a secret that is not one: nothing
+
+
+def test_a_new_link_code_used_on_the_web_ends_every_other_connection(world, store):
+    """`new_link` keeps its meaning on the web: for when someone else may have had access, every other connection
+    ends, an app's and another browser's, and the yes page gets a new link."""
+    ola, rae = world.pair()
+    code, grant = allowed(store)
+    store.exec("UPDATE grants SET person_id=? WHERE id=?", ola, grant)
+    _, refresh = net.exchange_code(store, code)
+    other_browser = net.site_sign_in(store, net.link_code(store, ola, replace=False))
+    conversation = world.reply("rae", world.go("ola", "a climbing partner"), "keen")
+    agree(store, ola, conversation, confirm=False)
+    page = net.yesLink(store, ola)
+    secret = net.site_sign_in(store, net.link_code(store, ola, replace=True))
+    assert net.renewal(store, refresh) is None
+    with pytest.raises(net.NotYours):
+        net.person_for_site(store, other_browser, "check")
+    assert net.person_for_site(store, secret, "check") == ola
+    assert net.yesLink(store, ola) not in (None, page) and net.yesPage(store, page) is None
+
+
+def test_forget_me_ends_every_web_client_connection(world, store):
+    ola, _ = world.pair()
+    secret = net.site_sign_in(store, net.link_code(store, ola, replace=False))
+    net.forget_me(store, ola, "delete everything")
+    with pytest.raises(net.NotYours):
+        net.person_for_site(store, secret, "check")
+
+
+def test_a_deleted_persons_code_signs_nobody_in(world, store):
+    ola, _ = world.pair()
+    code = net.link_code(store, ola, replace=False)
+    net.forget_me(store, ola, "delete everything")
+    with pytest.raises(net.Refused):
+        net.site_sign_in(store, code)
+
+
 # -- being woken: MCP Events ---------------------------------------------------------------------------------------
 
 SECRET = "whsec_" + "A" * 32                                  # 24 bytes of key
@@ -2452,6 +2538,7 @@ def _writer_calls(w) -> dict:
     empty_grant = net.authorization_code(s, empty_code)["grant"]
     empty = net.person_for_grant(s, empty_grant, "check")
     linking = net.link_code(s, ola, replace=True)
+    site_code = net.link_code(s, rae, replace=False)
     # A key from before locks waiting for ola's connection, which takes its copy at its next renewal.
     s.exec("INSERT INTO escrow VALUES (?,?,?)", ola, vault.encode(vault.key(ola)), s.now() + 86400)
     s.exec("UPDATE grants SET person_key='' WHERE id=?", grant)
@@ -2502,6 +2589,7 @@ def _writer_calls(w) -> dict:
         "_start_over": (lost, lambda: net.person_for_connector(s, lost_link, "check")),
         "link_code": (ola, lambda: net.link_code(s, ola, replace=False)),
         "use_link_code": (empty, lambda: net.use_link_code(s, empty, empty_grant, linking)),
+        "site_sign_in": (None, lambda: net.site_sign_in(s, site_code)),
         "subscribe": (ola, lambda: net.subscribe(s, ola, grant, "https://app.test/hook", SECRET, 7)),
         "unsubscribe": (ola, lambda: net.unsubscribe(s, ola, grant, "https://app.test/hook")),
         "drop_subscription": (None, lambda: net.drop_subscription(s, "sub_x")),

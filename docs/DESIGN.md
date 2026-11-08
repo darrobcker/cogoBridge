@@ -536,8 +536,12 @@ person a question after a deal.
 The only pages are home; the documentation a directory asks for (`/docs`, and `/support`, which goes to its
 support part), which a server's theme provides, since its words name the operator and how to reach them; the invite page and the connect page it leads to; the Allow page
 an app's sign-in opens, and its pages for a sign-in that expired or that a day's limit turned away; the invalid-link page, and the page for an address
-with none; the consent page, which is also the privacy policy and the terms; and a person's yes page. None of them
-knows who anyone is: the yes page knows its person only by its link. Beside them, one line of plain text proves to
+with none; the consent page, which is also the privacy policy and the terms; a person's yes page; and, where a server
+serves one, its web client. None of them but the web client knows who anyone is: the yes page knows its person only
+by its link. The web client is there because not everyone wants to work through an assistant, and some steps need a
+browser anyway: it signs in as one of the person's own connections, with a code from one they already have, and
+does what their assistant could, through the same rules in `net`, and nothing more. The chat stays first: invite
+pages and the directories lead with adding Bridge to an AI. Beside them, one line of plain text proves to
 OpenAI that this host is the publisher's. The Allow page exists because sign-in needs a page the person's own browser
 shows: it holds one button, and asks for nothing. The yes page exists because a name and contact should leave only on
 the person's own press (§2): it holds a Confirm and a Take back for each yes, and nothing else.

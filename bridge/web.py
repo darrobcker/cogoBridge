@@ -2,10 +2,11 @@
 the consent text, which is also the privacy policy and the terms, a person's yes page, a theme's documentation, and one
 saying an address has no page.
 
-Everything else happens in the chat. There is no inbox, no settings page and no password, and no page knows who anyone
-is: a person and their first membership are made at their AI's first tool call through a connection Allow made, so a
-page previewed, reloaded or pressed twice makes nobody. The yes page knows its person only by its link, and is where
-they confirm, themselves, each yes their AI recorded (PROTOCOL.md §3 rule 5): a name and a contact leave nowhere else.
+Everything else happens in the chat, or in the web client a server may serve beside these (`site.py`, given `site`):
+there is no password, and no page here knows who anyone is: a person and their first membership are made at their
+AI's first tool call through a connection Allow made, so a page previewed, reloaded or pressed twice makes nobody.
+The yes page knows its person only by its link, and is where they confirm, themselves, each yes their AI recorded
+(PROTOCOL.md §3 rule 5): a name and a contact leave nowhere else, but for the same press in the web client.
 """
 from __future__ import annotations
 
@@ -71,14 +72,15 @@ def _version() -> str:
 
 def create_app(store: Store, *, base_url: str, operator: str = "", claude_listing: str = "",
                chatgpt_listing: str = "", contact: str = "", openai_challenge: str = "", theme: str = "",
-               source: str = "") -> Starlette:
+               source: str = "", site: str = "", dev: bool = False) -> Starlette:
     """`operator` is who runs this server, named on the pages, which say what they cannot read; `source`, where the
     code it runs is published, so a reader can check the pages' claim against it; `contact`, how to
     reach them, for the help a directory listing asks to link to. `openai_challenge`: the token OpenAI's plugin portal
     asks this host to show, to prove it is the publisher's. `theme`: a directory whose `templates/` are found before
     these and whose `static/` is served at /static — a server's own look, kept out of the protocol's code. A theme
     replaces the frame (`base.html`) and may replace `home.html`; the other pages' words, which say who can read
-    what before anyone presses a button, are these."""
+    what before anyone presses a button, are these. `site`: the web client's directory, whose pages are served at /
+    in place of home and the docs (`site.SiteFiles`); `dev`, never kept by the browser."""
     here = Path(__file__).parent
     looks = [Path(theme)] if theme else []
     env = Environment(loader=ChoiceLoader([FileSystemLoader(str(d / "templates")) for d in [*looks, here]]),
@@ -245,12 +247,17 @@ def create_app(store: Store, *, base_url: str, operator: str = "", claude_listin
     async def missing(request: Request, exc: Exception) -> Response:
         return page("missing.html", 404)
 
-    return Starlette(exception_handlers={404: missing},
-                     routes=[Route("/", home), Route("/health", health), Route("/consent", consent),
-                             Route("/privacy", consent), Route("/terms", consent),
-                             Route("/.well-known/openai-apps-challenge", challenge),
-                             Route("/favicon.ico", favicon), Mount("/static", _Kept(directory=static)),
-                             Route("/allow", allow, methods=["GET", "POST"]),
-                             Route("/join/{invite}", join, methods=["GET", "POST"]),
-                             Route("/yes/{link}", yes, methods=["GET", "POST"]), Route("/docs", docs),
-                             Route("/support", support)])
+    own = [Route("/health", health), Route("/consent", consent),
+           Route("/.well-known/openai-apps-challenge", challenge),
+           Route("/favicon.ico", favicon), Mount("/static", _Kept(directory=static)),
+           Route("/allow", allow, methods=["GET", "POST"]),
+           Route("/join/{invite}", join, methods=["GET", "POST"]),
+           Route("/yes/{link}", yes, methods=["GET", "POST"])]
+    if site:
+        # The client's own home, docs, privacy and terms; the pages above stay the server's.
+        from .site import SiteFiles
+        routes = [*own, Mount("/", app=SiteFiles(Path(site), dev=dev))]
+    else:
+        routes = [Route("/", home), *own, Route("/privacy", consent), Route("/terms", consent), Route("/docs", docs),
+                  Route("/support", support)]
+    return Starlette(exception_handlers={404: missing}, routes=routes)

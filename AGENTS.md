@@ -12,7 +12,8 @@ For coding agents and new contributors. Read `PROTOCOL.md` first: it is short, a
 | `bridge/vault.py` | Locks: the keys what members write is kept under, and the keys one call holds (§5) |
 | `bridge/store.py` | SQLite schema, one connection, one lock |
 | `bridge/mcp_server.py` | One MCP tool per operation (`community` holds its actions); the instructions every assistant receives; what `check` renders |
-| `bridge/web.py`, `templates/`, `static/` | The invite pages, the Allow page sign-in opens, the consent page, a person's yes page (where a yes is confirmed), `/docs` when a theme gives one, and the not-found page, in plain dress; `BRIDGE_THEME` gives a server its own look. There is no other web surface, on purpose |
+| `bridge/web.py`, `templates/`, `static/` | The invite pages, the Allow page sign-in opens, the consent page, a person's yes page (where a yes is confirmed), `/docs` when a theme gives one, and the not-found page, in plain dress; `BRIDGE_THEME` gives a server its own look. Beside them, only the web client (`site.py`) |
+| `bridge/site.py` | The web client's API (`/api/…`, PROTOCOL.md §5): one route per operation, each a call into `net`, signed in by a cookie that holds a connection's secret. No SQL and no rule of its own. `BRIDGE_SITE` serves the client's own files beside it |
 | `bridge/oauth.py` | Sign-in: the MCP SDK's OAuth server, answered from `net`, where its rules are |
 | `bridge/notify.py` | Wake-ups: the ntfy.sh nudge, and MCP Events signed to the apps that subscribed |
 | `bridge/app.py`, `cli.py` | ASGI wiring; operator commands |
@@ -50,7 +51,8 @@ changes only through `scripts/deploy <commit>`, and editing this checkout change
    (`tests/test_net.py::test_nothing_depends_on_who_wrote_an_unnamed_need`) pins the rest.
 3. No model runs on the server and no API key is read. Judgment belongs to each person's own assistant.
 4. Member-written text reaches any assistant, its own person's included, only through `mcp_server.said()` —
-   but for the piece of it a guard refusal quotes back to its writer.
+   but for the piece of it a guard refusal quotes back to its writer. It reaches the web client only as JSON values, which
+   its pages put on screen as text, never as markup.
 5. Every write in `net.py` runs inside `store.transaction()`, and none in a person's name writes anything once
    that person is deleted. `tests/test_net.py` finds every writer and checks both.
 6. `NotYours` carries no detail. `Refused` carries a reason the caller's assistant can act on.
@@ -62,7 +64,8 @@ changes only through `scripts/deploy <commit>`, and editing this checkout change
    test_nothing_anyone_wrote_is_kept_readable` scans the database for it; the MCP tests run each call with its own
    keys only, so code that opened someone else's would fail there.
 
-9. A name and contact leave only once their person confirms a yes on their yes page (`net.confirmYes`), never on an
+9. A name and contact leave only once their person confirms a yes on their yes page, or in the web client signed in
+   as them (`net.confirmYes`, both), never on an
    assistant's `agree` alone, and the server never tells an assistant to call anything unasked. `tests/test_net.py::
    test_agree_alone_releases_nothing` and `tests/test_surface.py::test_no_answer_tells_an_assistant_to_act_unasked`
    pin them.

@@ -5,7 +5,7 @@ BRIDGE_BASE_URL (the public URL, when not using --tunnel or --hostname), BRIDGE_
 shown on the pages, which say what you cannot read), BRIDGE_SOURCE (where the code you run is published, linked
 from them), BRIDGE_CONTACT (how people reach you, on the help the directories link to), and for the directories
 (docs/OPERATIONS.md): BRIDGE_CLAUDE_LISTING, BRIDGE_CHATGPT_LISTING and BRIDGE_OPENAI_CHALLENGE; BRIDGE_THEME, a
-directory with a server's own look.
+directory with a server's own look; BRIDGE_SITE (or --site), the web client's directory.
 """
 from __future__ import annotations
 
@@ -18,6 +18,7 @@ import sys
 import threading
 import time
 from pathlib import Path
+from urllib.parse import urlparse
 
 from . import net
 
@@ -56,11 +57,35 @@ def cmd_serve(args) -> None:
         url = _quick_tunnel(args.port)
     (HOME / "url.txt").write_text(url)
     print(f"Bridge: {url}", file=sys.stderr)
-    site = {key: os.environ.get(f"BRIDGE_{key.upper()}", "")
-            for key in ("claude_listing", "chatgpt_listing", "contact", "openai_challenge", "theme", "source")}
-    app = create_app(store, base_url=url, operator=os.environ.get("BRIDGE_OPERATOR", ""), **site)
+    pages = {key: os.environ.get(f"BRIDGE_{key.upper()}", "")
+             for key in ("claude_listing", "chatgpt_listing", "contact", "openai_challenge", "theme", "source")}
+    site = args.site or os.environ.get("BRIDGE_SITE", "")
+    if site and not (Path(site) / "index.html").is_file():
+        sys.exit(f"bridge serve: --site {site} has no index.html")
+    if args.dev and not _on_this_machine(url, args.host):
+        # Its demo sign-in lets anyone be anyone: never on an address another machine can reach.
+        sys.exit("bridge serve --dev runs only at http://127.0.0.1 or http://localhost, bound to 127.0.0.1")
+    app = create_app(store, base_url=url, operator=os.environ.get("BRIDGE_OPERATOR", ""), site=site, dev=args.dev,
+                     dev_sessions=HOME / "demo-sessions.json" if args.dev else None, **pages)
     # No access log: the older connector links carry their secret in the URL, and sign-in its request.
     uvicorn.run(app, host=args.host, port=args.port, log_level="info", access_log=False)
+
+
+def _on_this_machine(url: str, host: str) -> bool:
+    parsed = urlparse(url)
+    return parsed.scheme == "http" and parsed.hostname in ("127.0.0.1", "localhost") and host == "127.0.0.1"
+
+
+def cmd_demo(args) -> None:
+    """A scratch home full of made-up people, for working on the web client: refuses the default home, the live
+    one, and any home that already has a database."""
+    from . import demo
+    if "BRIDGE_HOME" not in os.environ or HOME.resolve() in {(Path.home() / d).resolve() for d in (".bridge",
+                                                                                                    "bridge-live")}:
+        sys.exit("bridge demo: set BRIDGE_HOME to a new scratch directory")
+    people = demo.seed(HOME)
+    print(f"demo: {len(people)} people in {HOME}. Serve it with: BRIDGE_HOME={HOME} bridge serve --site <dir> --dev",
+          file=sys.stderr)
 
 
 def _quick_tunnel(port: int) -> str:
@@ -113,7 +138,11 @@ def main(argv=None) -> None:
     serve.add_argument("--tunnel", action="store_true", help="a throwaway public URL via cloudflared")
     serve.add_argument("--hostname", help="your own hostname, with --named-tunnel")
     serve.add_argument("--named-tunnel", dest="named_tunnel")
+    serve.add_argument("--site", help="the web client's directory, served at / with its API at /api")
+    serve.add_argument("--dev", action="store_true", help="on this machine only: sign in as any demo person")
     serve.set_defaults(run=cmd_serve)
+    demo = commands.add_parser("demo", help="fill a new scratch BRIDGE_HOME with made-up people, for the web client")
+    demo.set_defaults(run=cmd_demo)
     community = commands.add_parser("community", help="start a community with a new owner; prints both links")
     community.add_argument("name")
     community.set_defaults(run=cmd_community)
