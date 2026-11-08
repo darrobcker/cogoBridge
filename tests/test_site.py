@@ -350,6 +350,16 @@ def test_demo_sign_in_only_with_dev_and_only_on_this_machine(store, pages, tmp_p
     dev = TestClient(create_app(store, base_url="http://127.0.0.1:4318", site=str(pages), dev=True,
                                 dev_sessions=sessions), base_url="http://127.0.0.1:4318")
     assert dev.get("/api/dev/people").json() == {"people": ["Ola"]}
+    # Switching between demo people and back: signing out of one keeps its connection for next time.
+    world = World(store)
+    ola, _ = world.pair()
+    sessions.write_text(json.dumps({"Ola": net.site_sign_in(store, net.link_code(store, ola, replace=False))}))
+    here = {"origin": "http://127.0.0.1:4318"}
+    for _ in range(2):
+        assert dev.post("/api/dev/sign-in-as", json={"name": "Ola"}, headers=here).status_code == 200
+        assert dev.get("/api/waiting").status_code == 200
+        assert dev.post("/api/sign-out", json={}, headers=here).status_code == 200
+        assert dev.get("/api/waiting").status_code == 401
     assert cli._on_this_machine("http://127.0.0.1:4318", "127.0.0.1")
     for url, host in (("https://bridge.test", "127.0.0.1"), ("http://127.0.0.1:4318", "0.0.0.0"),
                       ("http://192.168.1.5:4318", "127.0.0.1")):

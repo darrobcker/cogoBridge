@@ -302,7 +302,7 @@ def create_site(store, *, base_url: str, dev_sessions: Path | None = None) -> li
         def run():
             with vault.keys():
                 secret = net.site_sign_in(store, typed[:80] if isinstance(typed, str) else "")
-            if before:          # this browser's last connection, which the new cookie replaces, ends with it
+            if before and not demo(before):     # the browser's last connection, which this replaces, ends
                 net.site_sign_out(store, before)
             return secret
         try:
@@ -311,12 +311,21 @@ def create_site(store, *, base_url: str, dev_sessions: Path | None = None) -> li
             return answer({"refused": str(exc)}, 400)
         return keep(answer({"signed_in": True}), secret)
 
+    def demo(secret: str) -> bool:
+        """A demo person's connection, which `bridge serve --dev` keeps for switching back to."""
+        try:
+            return dev_sessions is not None and secret in json.loads(dev_sessions.read_text()).values()
+        except (OSError, ValueError):
+            return False
+
     async def sign_out(request: Request) -> Response:
         try:
             await body(request)
         except _Turned as turned:
             return answer({"refused": turned.reason}, turned.status)
-        await run_in_threadpool(net.site_sign_out, store, request.cookies.get(cookie, "")[:200])
+        secret = request.cookies.get(cookie, "")[:200]
+        if not demo(secret):
+            await run_in_threadpool(net.site_sign_out, store, secret)
         return forget(answer({"signed_out": True}))
 
     routes = [
