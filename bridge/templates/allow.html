@@ -29,7 +29,11 @@ alone: anyone who uses it can act as you, and can open the link your AI gives yo
 {% endif %}
 <button type="submit" name="choice" value="deny">Cancel</button>
 </form>
+{% if connect %}
+<p class="muted">Nothing to fill in: no email, no password. &middot; <a href="/privacy">Who sees what</a></p>
+{% else %}
 <p class="muted">Nothing to fill in: no email, no password. Allow makes a new account for this app. Already use
 Bridge in another app? Allow anyway, then ask your AI there for a Bridge code and give it to your AI here.
 &middot; <a href="/privacy">Who sees what</a></p>
+{% endif %}
 {% endblock %}
