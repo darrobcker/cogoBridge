@@ -62,7 +62,8 @@ changes only through `scripts/deploy <commit>`, and editing this checkout change
    every member's assistant sees every need in its communities.
 8. What a member writes is stored only locked, and a call holds the key of no one but the person whose connection
    it came through. Nothing reads a key from anywhere but that call, or a link made for one person's own use: an
-   invite link, and their yes page's link. `tests/test_net.py::
+   invite link, and their yes page's link. A web client's passkey secret and recovery code arrive with the call
+   that uses them, and are never kept. `tests/test_net.py::
    test_nothing_anyone_wrote_is_kept_readable` scans the database for it; the MCP tests run each call with its own
    keys only, so code that opened someone else's would fail there.
 

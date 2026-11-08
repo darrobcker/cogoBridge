@@ -15,6 +15,7 @@ import pytest
 from conftest import T0, Clock, World, agree, confirm_yes, own_link, recode, reply_yes, seen
 
 from bridge import mcp_server, net, vault
+from bridge import store as store_module
 
 
 def resolves(store, secret: str) -> str | None:
@@ -2309,6 +2310,118 @@ def test_a_deleted_persons_code_signs_nobody_in(world, store):
         net.site_sign_in(store, code)
 
 
+def test_starting_on_the_web_makes_someone_new_in_the_invites_community(world, store, keys):
+    """No AI: someone opens an invite and starts in the web client, joined as a first tool call would join them."""
+    secret = net.start_on_site(store, world.invite)
+    keys.clear()
+    with vault.keys():
+        person = net.person_for_site(store, secret, "check")
+        assert [c["id"] for c in net.me(store, person)["communities"]] == [world.community]
+    alone = net.start_on_site(store)
+    with vault.keys():
+        assert net.me(store, net.person_for_site(store, alone, "check"))["communities"] == []
+
+
+def test_a_passkey_opens_its_persons_key_only_with_what_its_prf_gives(world, store, keys):
+    """The server keeps a passkey's public key and the person's key locked under what its PRF derives, which comes
+    only with a sign-in: a wrong one, none, or a passkey that never gave one opens nothing, and nothing is made."""
+    ola, _ = world.pair()
+    prf = b"\x01" * 32
+    assert net.add_passkey(store, ola, "cred-1", b"public", 0, net.passkey_handle(store, ola), prf)
+    assert not net.add_passkey(store, ola, "cred-2", b"public", 0, net.passkey_handle(store, ola), None)
+    with pytest.raises(net.Refused):
+        net.add_passkey(store, ola, "cred-1", b"other", 0, "h", prf)                # never overwritten
+    keys.clear()
+    grants = store.one("SELECT COUNT(*) n FROM grants")["n"]
+    for credential, given in (("cred-1", b"\x02" * 32), ("cred-1", None), ("cred-2", prf)):
+        with vault.keys(), pytest.raises(net.Refused, match="recovery code"):
+            net.passkey_sign_in(store, credential, 1, given)
+    assert store.one("SELECT COUNT(*) n FROM grants")["n"] == grants
+    with vault.keys():
+        secret = net.passkey_sign_in(store, "cred-1", 1, prf)
+    with vault.keys():
+        assert net.person_for_site(store, secret, "check") == ola and net.me(store, ola)["name"] == "Ola Mensah"
+    assert len({r["handle"] for r in store.all("SELECT handle FROM passkeys")}) == 1     # one handle per person
+
+
+def test_a_passkey_that_gave_no_prf_when_made_can_be_given_a_key_later(world, store, keys):
+    ola, _ = world.pair()
+    net.add_passkey(store, ola, "cred-1", b"public", 0, "h", None)
+    with pytest.raises(net.NotYours):
+        net.key_passkey(store, world.owner, "cred-1", 3, b"\x04" * 32)                  # only its own person's
+    net.key_passkey(store, ola, "cred-1", 1, b"\x03" * 32)
+    keys.clear()
+    with vault.keys():
+        assert net.person_for_site(store, net.passkey_sign_in(store, "cred-1", 2, b"\x03" * 32), "check") == ola
+
+
+def test_a_recovery_code_works_once_and_is_replaced(world, store, keys):
+    ola, _ = world.pair()
+    code = net.new_recovery_code(store, ola)
+    keys.clear()
+    with vault.keys():
+        secret, fresh = net.recovery_sign_in(store, code)
+        assert net.person_for_site(store, secret, "check") == ola and fresh != code
+    for tried in (code, "aaaa-bbbb-cccc-dddd-eeee-ffff", ""):
+        with vault.keys(), pytest.raises(net.Refused):
+            net.recovery_sign_in(store, tried)
+    with vault.keys():
+        assert net.person_for_site(store, net.recovery_sign_in(store, fresh.upper())[0], "check") == ola
+
+
+def test_forget_me_new_link_and_starting_over_remove_every_passkey_and_the_recovery_code(world, store):
+    ola, rae = world.pair()
+    for person in (ola, rae):
+        net.add_passkey(store, person, f"cred-{person}", b"public", 0, "h", b"\x01" * 32)
+        net.new_recovery_code(store, person)
+    net.forget_me(store, ola, "delete everything")
+    net.site_sign_in(store, net.link_code(store, rae, replace=True))
+    for person in (ola, rae):
+        assert net.ways_in(store, person)["passkeys"] == [] and not net.ways_in(store, person)["recovery"]
+
+
+def test_a_broken_connection_never_starts_over_someone_a_passkey_still_opens(world, store, keys):
+    """A connection whose copy opens nothing starts its person over unless something else of theirs still holds
+    their key: a passkey or a recovery code counts, or one broken browser would erase someone who only uses the web."""
+    ola, _ = world.pair()
+    secret = net.site_sign_in(store, net.link_code(store, ola, replace=False))
+    net.add_passkey(store, ola, "cred-1", b"public", 0, "h", b"\x01" * 32)
+    public = store.one("SELECT public FROM people WHERE id=?", ola)["public"]
+    store.exec("UPDATE grants SET person_key='v1.broken' WHERE client_id=?", net.SITE)
+    keys.clear()
+    with vault.keys():
+        net.person_for_site(store, secret, "check")
+        with pytest.raises(vault.Locked):
+            net.me(store, ola)
+    assert store.one("SELECT public FROM people WHERE id=?", ola)["public"] == public
+    assert net.is_member(store, ola, world.community)
+
+
+def test_a_passkey_challenge_is_for_one_use_one_purpose_and_one_person(world, store, clock):
+    ola, rae = world.pair()
+    challenge = net.passkey_challenge(store, "add", ola)
+    assert not net.take_passkey_challenge(store, challenge, "add", rae)
+    assert not net.take_passkey_challenge(store, challenge, "add", ola)                   # used up by the try
+    later = net.passkey_challenge(store, "sign-in")
+    assert not net.take_passkey_challenge(store, later, "add")
+    stale = net.passkey_challenge(store, "sign-in")
+    clock.advance(net.PASSKEY_CHALLENGE_S + 1)
+    assert not net.take_passkey_challenge(store, stale, "sign-in")
+    assert net.take_passkey_challenge(store, net.passkey_challenge(store, "sign-in"), "sign-in")
+
+
+def test_a_database_from_before_passkeys_gains_their_tables(tmp_path):
+    path = tmp_path / "old.db"
+    net.open_store(path).db.close()
+    import sqlite3
+    db = sqlite3.connect(path)
+    db.executescript("DROP TABLE passkeys; DROP TABLE recovery_codes; PRAGMA user_version=10;")
+    db.close()
+    store = net.open_store(path)
+    assert store.db.execute("PRAGMA user_version").fetchone()[0] == store_module.SCHEMA_VERSION == 11
+    assert net.ways_in(store, "p-nobody") == {"passkeys": [], "recovery": False, "browsers": 0}
+
+
 # -- being woken: MCP Events ---------------------------------------------------------------------------------------
 
 SECRET = "whsec_" + "A" * 32                                  # 24 bytes of key
@@ -2539,6 +2652,9 @@ def _writer_calls(w) -> dict:
     empty = net.person_for_grant(s, empty_grant, "check")
     linking = net.link_code(s, ola, replace=True)
     site_code = net.link_code(s, rae, replace=False)
+    prf = b"p" * 32                                                  # what a passkey's PRF gave, for ola's
+    net.add_passkey(s, ola, "cred-ola", b"public", 0, "handle", prf)
+    challenge = net.passkey_challenge(s, "sign-in")
     # A key from before locks waiting for ola's connection, which takes its copy at its next renewal.
     s.exec("INSERT INTO escrow VALUES (?,?,?)", ola, vault.encode(vault.key(ola)), s.now() + 86400)
     s.exec("UPDATE grants SET person_key='' WHERE id=?", grant)
@@ -2590,6 +2706,14 @@ def _writer_calls(w) -> dict:
         "link_code": (ola, lambda: net.link_code(s, ola, replace=False)),
         "use_link_code": (empty, lambda: net.use_link_code(s, empty, empty_grant, linking)),
         "site_sign_in": (None, lambda: net.site_sign_in(s, site_code)),
+        "_site_session": (None, lambda: net.site_sign_in(s, site_code)),
+        "_forget_ways_in": (ola, lambda: net.forget_me(s, ola, "delete everything")),
+        "take_passkey_challenge": (None, lambda: net.take_passkey_challenge(s, challenge, "sign-in")),
+        "add_passkey": (ola, lambda: net.add_passkey(s, ola, "cred-new", b"public", 0, "handle", prf)),
+        "key_passkey": (ola, lambda: net.key_passkey(s, ola, "cred-ola", 1, prf)),
+        "passkey_sign_in": (ola, lambda: net.passkey_sign_in(s, "cred-ola", 1, prf)),
+        "remove_passkey": (ola, lambda: net.remove_passkey(s, ola, "cred-ola")),
+        "new_recovery_code": (ola, lambda: net.new_recovery_code(s, ola)),
         "subscribe": (ola, lambda: net.subscribe(s, ola, grant, "https://app.test/hook", SECRET, 7)),
         "unsubscribe": (ola, lambda: net.unsubscribe(s, ola, grant, "https://app.test/hook")),
         "drop_subscription": (None, lambda: net.drop_subscription(s, "sub_x")),
@@ -3138,7 +3262,8 @@ def test_a_live_database_from_before_comes_over_whole_and_locked(tmp_path, keys)
     keys.clear()                                          # nobody's key is in anyone's hand: a migration has none
     s = net.open_store(path)
     s.set_clock(Clock(T0 + 60))
-    assert s.one("PRAGMA user_version")[0] == 10 and s.one("SELECT COUNT(*) n FROM escrow")["n"] == 3
+    assert s.one("PRAGMA user_version")[0] == store_module.SCHEMA_VERSION
+    assert s.one("SELECT COUNT(*) n FROM escrow")["n"] == 3
     s.db.close()
     raw = path.read_bytes()
     assert not [w for w in words | {"Ab_-9xYz12Qq"} if w.encode() in raw]

@@ -54,6 +54,9 @@ LINK_CODE = 12                    # characters (59 bits) of one, typed by hand f
 SITE = "site"                     # the client every web client connection is made for: no app can register or use it
 SITE_SIGN_INS_PER_DAY = 20        # browsers one person may sign in a day: each is a connection kept until it ends
 SITE_SIGN_INS_ALL_PER_DAY = 5000  # and everyone's, as Allow's are capped
+RECOVERY_CODE = 24                # characters (about 118 bits) of a recovery code: no copy of the database guesses one
+PASSKEYS = 10                     # passkeys one person may hold
+PASSKEY_CHALLENGE_S = 300         # how long a WebAuthn challenge lasts
 WAKE_S = 30 * 86400               # the longest an app's subscription to be woken lasts before it renews it
 ESCROW_S = 14 * 86400             # a key from before locks waits this long for its person's connections to copy it
 YES_WAITS_S = 3 * 86400           # a yes waits this long for its person to confirm it on their yes page
@@ -269,6 +272,7 @@ def _start_over(store: Store, person_id: str) -> bytes:
     store.exec("DELETE FROM reveals WHERE to_id=?", person_id)
     store.exec("DELETE FROM yes_pages WHERE person_id=?", person_id)
     store.exec("DELETE FROM yeses WHERE person_id=?", person_id)
+    _forget_ways_in(store, person_id)
     vault.hold(person_id, private)
     return private
 
@@ -279,7 +283,11 @@ def _locked_out(store: Store, person_id: str, *, besides: tuple[str, str]) -> bo
     return bool(store.one("SELECT 1 FROM grants WHERE person_id=? AND revoked_t IS NULL AND person_key<>'' AND "
                           "id<>?", person_id, row if table == "grants" else "")
                 or store.one("SELECT 1 FROM connectors WHERE person_id=? AND revoked_t IS NULL AND person_key<>'' "
-                             "AND secret_hash<>?", person_id, row if table == "connectors" else ""))
+                             "AND secret_hash<>?", person_id, row if table == "connectors" else "")
+                # A web client's passkey and recovery code open it too: one broken connection must not start over
+                # someone they could still sign in as (review).
+                or store.one("SELECT 1 FROM passkeys WHERE person_id=? AND person_key<>''", person_id)
+                or store.one("SELECT 1 FROM recovery_codes WHERE person_id=?", person_id))
 
 
 LOCKED = ("this connection cannot open your person's Bridge: it is locked under the keys their other connections "
@@ -421,6 +429,35 @@ def _site_key(secret: str) -> bytes:
     return vault.from_secret(secret, "site connection")
 
 
+def _site_cap(store: Store, person_id: str) -> None:
+    """Each web sign-in is a connection kept until it ends: one sign-in after another would keep making them
+    (security review). Counted however the browser signs in."""
+    if (_today(store, f"site {person_id}") >= SITE_SIGN_INS_PER_DAY
+            or _today(store, "site sign-ins") >= SITE_SIGN_INS_ALL_PER_DAY):
+        raise Refused("too many web sign-ins today; try again tomorrow")
+    _count(store, f"site {person_id}")
+    _count(store, "site sign-ins")
+
+
+def _site_session(store: Store, person_id: str, private: bytes) -> tuple[str, str]:
+    """A connection for a browser, every way it signs in: its secret, for the cookie alone, and its id. The person's
+    key goes in locked under the secret, and this call holds it from now on. Inside the caller's transaction, after
+    `_site_cap`."""
+    vault.hold(person_id, private)
+    secret, grant = secrets.token_urlsafe(32), _new_id(store, "grants", "k", 16)
+    store.exec("INSERT INTO grants(id, client_id, person_id, created_t, person_key) VALUES (?,?,?,?,?)", grant, SITE,
+               person_id, store.now(), vault.lock(_site_key(secret), private, "person key"))
+    _token(store, SITE, grant_id=grant, token=secret)
+    return secret, grant
+
+
+def _forget_ways_in(store: Store, person_id: str) -> None:
+    """Every passkey and the recovery code of theirs: at `forget_me`, at a `new_link` code's use, and at starting over,
+    when what they held the old key under opens nothing."""
+    store.exec("DELETE FROM passkeys WHERE person_id=?", person_id)
+    store.exec("DELETE FROM recovery_codes WHERE person_id=?", person_id)
+
+
 def site_sign_in(store: Store, code: str) -> str:
     """The web client signing in with a code from a connection the person already has: a new connection of theirs,
     held by that browser. A `new_link` code keeps its meaning: every other connection of theirs ends, and their yes
@@ -434,28 +471,19 @@ def site_sign_in(store: Store, code: str) -> str:
         if not row or row["deleted_t"] is not None:
             raise dead
         person_id = row["person_id"]
-        # Each sign-in is a connection kept until it ends: a code and a sign-in over and over would keep making
-        # them (security review).
-        if (_today(store, f"site {person_id}") >= SITE_SIGN_INS_PER_DAY
-                or _today(store, "site sign-ins") >= SITE_SIGN_INS_ALL_PER_DAY):
-            raise Refused("too many web sign-ins today; try again tomorrow")
-        _count(store, f"site {person_id}")
-        _count(store, "site sign-ins")
+        _site_cap(store, person_id)
         typed = "".join(ch for ch in code.lower() if ch in _ALPHABET)
         theirs = vault.unlock(vault.from_code(typed, "link code", person_id), row["person_key"], "person key") \
             if row["person_key"] else None
         store.exec("UPDATE link_codes SET used_t=? WHERE hash=?", store.now(), row["hash"])
         if theirs is None:
             theirs = _start_over(store, person_id)
-        vault.hold(person_id, theirs)
-        secret, grant = secrets.token_urlsafe(32), _new_id(store, "grants", "k", 16)
-        store.exec("INSERT INTO grants(id, client_id, person_id, created_t, person_key) VALUES (?,?,?,?,?)", grant,
-                   SITE, person_id, store.now(), vault.lock(_site_key(secret), theirs, "person key"))
-        _token(store, SITE, grant_id=grant, token=secret)
+        secret, grant = _site_session(store, person_id, theirs)
         if row["replace"]:
             _end_grants(store, "person_id=? AND id<>?", person_id, grant)
             store.exec("UPDATE connectors SET revoked_t=? WHERE person_id=? AND revoked_t IS NULL", store.now(),
                        person_id)
+            _forget_ways_in(store, person_id)
             _moveYesPage(store, person_id)
     return secret
 
@@ -475,6 +503,198 @@ def site_sign_out(store: Store, secret: str) -> None:
         row = _live_token(store, secret, SITE) if secret else None
         if row and row["client_id"] == SITE:
             _end_grants(store, "id=?", row["grant_id"])
+
+
+def site_person(store: Store, secret: str) -> str | None:
+    """Whose live web client connection a browser holds, without opening anything: for the Allow page, which only
+    offers to connect an app to them."""
+    row = _live_token(store, secret, SITE) if secret else None
+    if not row or row["client_id"] != SITE:
+        return None
+    g = store.one("SELECT g.person_id FROM grants g JOIN people p ON p.id=g.person_id AND p.deleted_t IS NULL "
+                  "WHERE g.id=?", row["grant_id"])
+    return g["person_id"] if g else None
+
+
+def start_on_site(store: Store, invite: str = "") -> str:
+    """Someone new, starting in the web client: as a first tool call would make them, joined to the community of the
+    invite they came with, under the same limits. Returns their browser's secret."""
+    found = community_by_invite(store, invite[:MAX_TEXT]) if invite else None
+    with store.transaction():
+        if not found and _today(store, "uninvited") >= UNINVITED_PER_DAY:
+            raise Refused("Bridge is taking no more new people without an invite today. Try again tomorrow, or ask "
+                          "someone in a community for its invite link.")
+        if _today(store, "site sign-ins") >= SITE_SIGN_INS_ALL_PER_DAY:
+            raise Refused("too many web sign-ins today; try again tomorrow")
+        person_id = new_person(store)
+        _site_cap(store, person_id)
+        secret, _ = _site_session(store, person_id, vault.key(person_id))
+        if found:
+            try:
+                join(store, person_id, found["id"], key=found["key"])
+            except Refused:
+                found = None                    # full for today: they join with the link later
+        if not found:
+            _count(store, "uninvited")
+    return secret
+
+
+# -- passkeys and the recovery code: a web client's own ways in (PROTOCOL.md §5) ---------------------------------------
+
+def _passkey_key(prf: bytes) -> bytes:
+    """What a passkey's PRF output locks their key under: through HKDF with its own purpose, and never kept."""
+    return vault.from_secret(vault.encode(prf), "passkey")
+
+
+def passkey_challenge(store: Store, purpose: str, person_id: str = "") -> str:
+    """A WebAuthn challenge, base64url, for one use within minutes: to add a passkey (`person_id`'s), to give one a
+    key, or to sign in."""
+    challenge = vault.encode(secrets.token_bytes(32))
+    with store.transaction():
+        if person_id:
+            _acting(store, person_id)
+        _token(store, "passkey", data={"purpose": purpose, "person": person_id}, token=challenge,
+               expires_t=store.now() + PASSKEY_CHALLENGE_S)
+    return challenge
+
+
+def take_passkey_challenge(store: Store, challenge: str, purpose: str, person_id: str = "") -> bool:
+    """Whether the server gave this challenge, for this, to this person, and it is unused and unexpired; used up
+    either way."""
+    with store.transaction():
+        row = _live_token(store, challenge, "passkey")
+        if not row:
+            return False
+        store.exec("DELETE FROM tokens WHERE hash=?", row["hash"])
+        data = json.loads(row["data"])
+        return data.get("purpose") == purpose and data.get("person", "") == person_id
+
+
+def passkey_handle(store: Store, person_id: str) -> str:
+    """The person's one WebAuthn user handle: the one their passkeys already carry, or a new random one. Never their
+    id: a password manager shows it nowhere, but it is the account's name there."""
+    row = store.one("SELECT handle FROM passkeys WHERE person_id=? LIMIT 1", person_id)
+    return row["handle"] if row else vault.encode(secrets.token_bytes(16))
+
+
+def passkey_ids(store: Store, person_id: str) -> list[str]:
+    return [r["id"] for r in store.all("SELECT id FROM passkeys WHERE person_id=? ORDER BY created_t", person_id)]
+
+
+def add_passkey(store: Store, person_id: str, credential_id: str, public_key: bytes, sign_count: int, handle: str,
+                prf: bytes | None) -> bool:
+    """A passkey the person just made, verified by the caller (bridge/passkeys.py): its public key, and their key
+    locked under what its PRF derives, if it gave anything. Returns whether it opens their key."""
+    private = vault.key(person_id)
+    locked = vault.lock(_passkey_key(prf), private, "person key") if prf else ""
+    with store.transaction():
+        _acting(store, person_id)
+        if store.one("SELECT 1 FROM passkeys WHERE id=?", credential_id):
+            raise Refused("that passkey is added already")
+        if store.one("SELECT COUNT(*) n FROM passkeys WHERE person_id=?", person_id)["n"] >= PASSKEYS:
+            raise Refused(f"{PASSKEYS} passkeys at most: remove one first")
+        store.exec("INSERT INTO passkeys(id, person_id, public_key, sign_count, person_key, handle, created_t) "
+                   "VALUES (?,?,?,?,?,?,?)", credential_id, person_id, vault.encode(public_key), sign_count, locked,
+                   handle, store.now())
+    return bool(locked)
+
+
+def passkey(store: Store, credential_id: str) -> dict | None:
+    """A passkey's public half, for verifying a sign-in with it."""
+    row = store.one("SELECT k.person_id, k.public_key, k.sign_count FROM passkeys k JOIN people p ON "
+                    "p.id=k.person_id AND p.deleted_t IS NULL WHERE k.id=?", credential_id)
+    return {**dict(row), "public_key": vault.decode(row["public_key"])} if row else None
+
+
+def key_passkey(store: Store, person_id: str, credential_id: str, sign_count: int, prf: bytes) -> None:
+    """A passkey of theirs that gave no PRF output when it was made, just used (verified by the caller) with one: their
+    key goes in locked under it, so it opens their key from now on."""
+    private = vault.key(person_id)
+    with store.transaction():
+        _acting(store, person_id)
+        if not store.one("SELECT 1 FROM passkeys WHERE id=? AND person_id=?", credential_id, person_id):
+            raise NotYours()
+        store.exec("UPDATE passkeys SET person_key=?, sign_count=?, used_t=? WHERE id=?",
+                   vault.lock(_passkey_key(prf), private, "person key"), sign_count, store.now(), credential_id)
+
+
+NO_PRF = ("this passkey cannot open your Bridge on this device (its password manager does not give the secret Bridge "
+          "keeps your key under). Use your recovery code, or a code from your AI.")
+
+
+def passkey_sign_in(store: Store, credential_id: str, sign_count: int, prf: bytes | None) -> str:
+    """A sign-in with a passkey, verified by the caller: their key opened with what its PRF derives, or refused
+    before anything is made; then a connection for this browser. Returns its secret."""
+    with store.transaction():
+        row = store.one("SELECT k.*, p.deleted_t FROM passkeys k JOIN people p ON p.id=k.person_id WHERE k.id=?",
+                        credential_id)
+        if not row or row["deleted_t"] is not None:
+            raise NotYours()
+        if not row["person_key"] or not prf:
+            raise Refused(NO_PRF)
+        try:
+            private = vault.unlock(_passkey_key(prf), row["person_key"], "person key")
+        except vault.Locked:
+            raise Refused(NO_PRF) from None
+        _site_cap(store, row["person_id"])
+        store.exec("UPDATE passkeys SET sign_count=?, used_t=? WHERE id=?", sign_count, store.now(), credential_id)
+        secret, _ = _site_session(store, row["person_id"], private)
+    return secret
+
+
+def remove_passkey(store: Store, person_id: str, credential_id: str) -> None:
+    with store.transaction():
+        _acting(store, person_id)
+        if not store.exec("DELETE FROM passkeys WHERE id=? AND person_id=?", credential_id, person_id).rowcount:
+            raise NotYours()
+
+
+def _recovery_hash(raw: str) -> str:
+    return _hash("recovery " + raw)
+
+
+def new_recovery_code(store: Store, person_id: str) -> str:
+    """Their recovery code, replacing any before it: shown once, used once, holding their key locked under it."""
+    raw = "".join(secrets.choice(_ALPHABET) for _ in range(RECOVERY_CODE))
+    private = vault.key(person_id)
+    with store.transaction():
+        _acting(store, person_id)
+        store.exec("INSERT OR REPLACE INTO recovery_codes(person_id, hash, person_key, created_t) VALUES (?,?,?,?)",
+                   person_id, _recovery_hash(raw), vault.lock(vault.from_secret(raw, "recovery code"), private,
+                                                              "person key"), store.now())
+    return "-".join(raw[i:i + 4] for i in range(0, RECOVERY_CODE, 4))
+
+
+def recovery_sign_in(store: Store, code: str) -> tuple[str, str]:
+    """A sign-in with their recovery code: a connection for this browser, and the code that replaces the one used.
+    Returns both."""
+    typed = "".join(ch for ch in code.lower() if ch in _ALPHABET)
+    dead = Refused("that recovery code does not work: check it was copied whole. Each works once; the newest is the "
+                   "one that counts.")
+    with store.transaction():
+        row = store.one("SELECT r.*, p.deleted_t FROM recovery_codes r JOIN people p ON p.id=r.person_id "
+                        "WHERE r.hash=?", _recovery_hash(typed))
+        if not row or row["deleted_t"] is not None:
+            raise dead
+        try:
+            private = vault.unlock(vault.from_secret(typed, "recovery code"), row["person_key"], "person key")
+        except vault.Locked:
+            raise dead from None
+        _site_cap(store, row["person_id"])
+        secret, _ = _site_session(store, row["person_id"], private)
+        fresh = new_recovery_code(store, row["person_id"])
+    return secret, fresh
+
+
+def ways_in(store: Store, person_id: str) -> dict:
+    """How the person can sign in on the web: their passkeys (whether each opens their key), whether they have a
+    recovery code, and how many browsers are signed in now."""
+    return {"passkeys": [{"id": r["id"], "created_t": r["created_t"], "used_t": r["used_t"],
+                          "opens": bool(r["person_key"])} for r in store.all(
+                "SELECT * FROM passkeys WHERE person_id=? ORDER BY created_t", person_id)],
+            "recovery": bool(store.one("SELECT 1 FROM recovery_codes WHERE person_id=?", person_id)),
+            "browsers": store.one("SELECT COUNT(*) n FROM grants WHERE person_id=? AND client_id=? AND revoked_t IS "
+                                  "NULL", person_id, SITE)["n"]}
 
 
 def person_for_connector(store: Store, secret: str, tool: str, *, operator: str = "") -> str:
@@ -913,6 +1133,7 @@ def use_link_code(store: Store, person_id: str, grant_id: str, code: str, token:
         if row["replace"]:
             _end_grants(store, "person_id=? AND id<>?", target, grant_id)
             store.exec("UPDATE connectors SET revoked_t=? WHERE person_id=? AND revoked_t IS NULL", store.now(), target)
+            _forget_ways_in(store, target)
             _moveYesPage(store, target)
         return (MOVED if row["replace"] else LINKED), target
 
@@ -956,6 +1177,7 @@ def forget_me(store: Store, person_id: str, confirm: str) -> None:
         store.exec("UPDATE memberships SET left_t=COALESCE(left_t, ?) WHERE person_id=?", now, person_id)
         store.exec("UPDATE connectors SET revoked_t=COALESCE(revoked_t, ?) WHERE person_id=?", now, person_id)
         _end_grants(store, "person_id=?", person_id)
+        _forget_ways_in(store, person_id)
         store.exec("DELETE FROM link_codes WHERE person_id=?", person_id)
         store.exec("DELETE FROM passes WHERE person_id=?", person_id)
         store.exec("UPDATE reports SET closed_t=COALESCE(closed_t, ?) WHERE reporter_id=? OR reported_id=?",

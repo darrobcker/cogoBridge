@@ -123,7 +123,8 @@ No host can prove that either way, the pages multiplied, and the product stopped
 one click, where it matters most: where a name and contact leave. The protocol says plainly that the server cannot
 tell a person's click from anyone else's.
 
-**One door: a person exists only once their own AI calls.** Everyone adds the same address, and their app signs in
+**One door: a person exists only once their own AI calls** (or, with the web client, once they start there
+themselves, PROTOCOL.md §5). Everyone adds the same address, and their app signs in
 (OAuth); the Allow page asks for nothing — no email, no password, no name — so the connection the app holds is the
 person. Allow makes a connection and nobody. The first tool call through it makes the person, and joins the
 community whose invite page that browser came from. Before this, the invite page handed each person a connector
@@ -539,8 +540,10 @@ an app's sign-in opens, and its pages for a sign-in that expired or that a day's
 with none; the consent page, which is also the privacy policy and the terms; a person's yes page; and, where a server
 serves one, its web client. None of them but the web client knows who anyone is: the yes page knows its person only
 by its link. The web client is there because not everyone wants to work through an assistant, and some steps need a
-browser anyway: it signs in as one of the person's own connections, with a code from one they already have, and
-does what their assistant could, through the same rules in `net`, and nothing more. The chat stays first: invite
+browser anyway: it signs in as one of the person's own connections (a code from one they already have, a passkey,
+their recovery code, or by starting there), and does what their assistant could, through the same rules in `net`,
+and nothing more. Its accounts ask for nothing, as Allow does: a passkey and a recovery code, no email and no
+password, since anything asked would tell the operator who people are. The chat stays first: invite
 pages and the directories lead with adding Bridge to an AI. Beside them, one line of plain text proves to
 OpenAI that this host is the publisher's. The Allow page exists because sign-in needs a page the person's own browser
 shows: it holds one button, and asks for nothing. The yes page exists because a name and contact should leave only on

@@ -206,12 +206,29 @@ the person ends, the one that asked included: for when someone else may have had
 older link. A brand-new connection that holds nothing asks its person whether they already use Bridge in
 another app, and how to bring the code over if so.
 
-**The web client.** A server MAY serve a web client, through which a person acts themselves. It signs in with a
-code from a connection the person already has (`setup` with `another_app`, or `new_link`, which keeps its meaning):
-used once, within an hour, it makes a new connection of that person, held by that browser. The server keeps its
-secret only as a hash, and the browser keeps it where the pages' scripts cannot read it (an HttpOnly, same-site
-cookie); it opens nothing through the MCP endpoint or the token endpoint. It is a connection like any other: it ends
-with the others at `new_link` and `forget_me`, and when its person signs out. Every operation in §4 is available
+**The web client.** A server MAY serve a web client, through which a person acts themselves. A browser holds a
+connection of its own, made when it signs in or starts; the server keeps its secret only as a hash, and the browser
+keeps it where the pages' scripts cannot read it (an HttpOnly, SameSite=Lax cookie: Lax, so the Allow page, reached
+through an app's redirect, can tell who is signed in there; every request that changes anything must also come as
+JSON from the server's own pages). It opens nothing through the MCP endpoint or the token endpoint. A browser signs
+in four ways:
+
+- with a code from a connection the person already has (`setup` with `another_app`, or `new_link`, which keeps its
+  meaning), used once, within an hour;
+- by starting there: a new person, joining the community of the invite it came with, as a first tool call would.
+  A browser already signed in joins that community as its own person instead;
+- with a passkey (WebAuthn, user verification required) the person added there. The server stores the passkey's
+  public key, and their key locked under a secret the passkey derives (its PRF extension), which the browser sends
+  only with a sign-in and the server never keeps. A passkey from an authenticator without PRF proves who it is but
+  opens nothing, and its sign-in is refused;
+- with their recovery code: one at a time, about 120 bits, shown once, used once and replaced at each use, holding
+  their key locked under it.
+
+A browser's connection is like any other: it ends with the others at `new_link` and `forget_me`, and when its person
+signs out; `new_link` and `forget_me` also remove every passkey and the recovery code. On the Allow page, a browser
+signed in may connect the app asking to that same person instead of making someone new, but only for an app whose
+every return address is a known AI app's (Claude, ChatGPT), and only on its person's press; the person's key goes
+with the authorization code, locked under it, to the app's connection. Every operation in §4 is available
 through it, and the server MUST enforce the rules for both in one place. Member text reaches it only as data its
 pages render as text, never as markup, labelled as §3 rule 4 says. A yes given there is recorded as `agree`
 records one, and confirmed there with the press the yes page asks for.

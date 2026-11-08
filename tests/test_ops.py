@@ -498,4 +498,4 @@ def test_a_store_opened_on_its_own_still_migrates(tmp_path):
     done = subprocess.run([sys.executable, "-c", "import sys; from bridge.store import Store; "
                            "print(Store(sys.argv[1]).one('PRAGMA user_version')[0])", str(path)],
                           capture_output=True, text=True)
-    assert done.stdout.strip() == "10", done.stderr
+    assert done.stdout.strip() == str(SCHEMA_VERSION), done.stderr

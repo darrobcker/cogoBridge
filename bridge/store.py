@@ -14,7 +14,7 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 
 # Sign-in (OAuth, PROTOCOL.md §5).
 SIGN_IN = """
@@ -106,6 +106,24 @@ CREATE INDEX yeses_by_conversation ON yeses(conversation_id);
 UPDATE conversation_people SET yes_t=NULL WHERE conversation_id IN (SELECT id FROM conversations WHERE deal_t IS NULL);
 DELETE FROM reveals WHERE conversation_id IN (SELECT id FROM conversations WHERE deal_t IS NULL);
 PRAGMA user_version=10;
+COMMIT;
+""",
+    # 10 → 11: the web client's passkeys and recovery codes.
+    10: """
+BEGIN;
+-- A web client's passkeys (PROTOCOL.md §5): `id` is the credential's id and `public_key` its COSE key, as the
+-- authenticator gave them. `person_key`: their key locked under what the passkey's PRF derives, '' when it has none
+-- (then it opens nothing). `handle`: the person's one WebAuthn user handle, the same on every passkey of theirs.
+CREATE TABLE passkeys (
+  id TEXT PRIMARY KEY, person_id TEXT NOT NULL, public_key TEXT NOT NULL, sign_count INTEGER NOT NULL DEFAULT 0,
+  person_key TEXT NOT NULL DEFAULT '', handle TEXT NOT NULL, created_t REAL NOT NULL, used_t REAL
+);
+CREATE INDEX passkeys_by_person ON passkeys(person_id);
+-- A person's recovery code, hashed, with their key locked under it: one at a time, replaced at each use.
+CREATE TABLE recovery_codes (
+  person_id TEXT PRIMARY KEY, hash TEXT NOT NULL UNIQUE, person_key TEXT NOT NULL, created_t REAL NOT NULL
+);
+PRAGMA user_version=11;
 COMMIT;
 """,
 }
@@ -234,6 +252,18 @@ CREATE INDEX yeses_by_person ON yeses(person_id, created_t);
 CREATE INDEX yeses_by_conversation ON yeses(conversation_id);
 -- One row per tool call: who, which tool, when. No arguments, no text. And one per Join press on an invite
 -- page: person '', tool "join-page <ai> <community id>".
+-- A web client's passkeys (PROTOCOL.md §5): `id` is the credential's id and `public_key` its COSE key, as the
+-- authenticator gave them. `person_key`: their key locked under what the passkey's PRF derives, '' when it has none
+-- (then it opens nothing). `handle`: the person's one WebAuthn user handle, the same on every passkey of theirs.
+CREATE TABLE passkeys (
+  id TEXT PRIMARY KEY, person_id TEXT NOT NULL, public_key TEXT NOT NULL, sign_count INTEGER NOT NULL DEFAULT 0,
+  person_key TEXT NOT NULL DEFAULT '', handle TEXT NOT NULL, created_t REAL NOT NULL, used_t REAL
+);
+CREATE INDEX passkeys_by_person ON passkeys(person_id);
+-- A person's recovery code, hashed, with their key locked under it: one at a time, replaced at each use.
+CREATE TABLE recovery_codes (
+  person_id TEXT PRIMARY KEY, hash TEXT NOT NULL UNIQUE, person_key TEXT NOT NULL, created_t REAL NOT NULL
+);
 CREATE TABLE calls (t REAL NOT NULL, person_id TEXT NOT NULL, tool TEXT NOT NULL);
 CREATE TABLE kv (k TEXT PRIMARY KEY, v TEXT NOT NULL);
 """ + SIGN_IN
