@@ -397,9 +397,10 @@ def allow_page(http: TestClient, callback: str):
                                            "code_challenge_method": "S256", "state": "st8"}, follow_redirects=False)
     ref = parse_qs(urlparse(asked.headers["location"]).query)["r"][0]
 
-    def finish(choice: str, origin: str | None = BASE, trade: bool = True):
+    def finish(choice: str, origin: str | None = BASE, trade: bool = True, fetched: str | None = None):
+        headers = {"origin": origin} if origin else {}
         back = http.post("/allow", data={"r": ref, "choice": choice}, follow_redirects=False,
-                         headers={"origin": origin} if origin else {})
+                         headers={**headers, "sec-fetch-site": fetched} if fetched else headers)
         if back.status_code != 303 or not trade:
             return back
         code = parse_qs(urlparse(back.headers["location"]).query)["code"][0]
@@ -444,6 +445,11 @@ def test_only_a_known_ai_app_and_only_this_pages_press_may_connect(store, pages,
     for origin in ("https://evil.test", None):
         _, finish = allow_page(http, CLAUDE)
         assert finish("connect", origin).status_code == 400
+    _, finish = allow_page(http, CLAUDE)
+    assert finish("connect", BASE, fetched="cross-site").status_code == 400
+    # A real browser: the page's form posts with Origin null (no-referrer), and says same-origin.
+    _, finish = allow_page(http, CLAUDE)
+    assert finish("connect", "null", trade=False, fetched="same-origin").status_code == 303
     _, finish = allow_page(http, CLAUDE)
     assert finish("connect", trade=False).status_code == 303                            # pressed, never traded
     assert store.one("SELECT COUNT(*) n FROM grants WHERE person_id=? AND client_id<>?", ola, net.SITE)["n"] == 0

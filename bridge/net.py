@@ -58,6 +58,7 @@ SITE_SIGN_INS_ALL_PER_DAY = 5000  # and everyone's, as Allow's are capped
 RECOVERY_CODE = 24                # characters (about 118 bits) of a recovery code: no copy of the database guesses one
 PASSKEYS = 10                     # passkeys one person may hold
 PASSKEY_CHALLENGE_S = 300         # how long a WebAuthn challenge lasts
+PASSKEY_CHALLENGES_PER_DAY = 20_000   # challenges anyone may ask for in a day, each a row until the sweep
 WAKE_S = 30 * 86400               # the longest an app's subscription to be woken lasts before it renews it
 ESCROW_S = 14 * 86400             # a key from before locks waits this long for its person's connections to copy it
 YES_WAITS_S = 3 * 86400           # a yes waits this long for its person to confirm it on their yes page
@@ -506,6 +507,15 @@ def site_sign_out(store: Store, secret: str) -> None:
             _end_grants(store, "id=?", row["grant_id"])
 
 
+def _still_signed_in(store: Store, person_id: str, session: str) -> None:
+    """The browser asking is still signed in as them, checked inside the transaction that makes a new way in: a
+    sign-in ended meanwhile, by `new_link`, must leave nothing behind (security review)."""
+    row = _live_token(store, session, SITE) if session else None
+    if not row or row["client_id"] != SITE or not store.one(
+            "SELECT 1 FROM grants WHERE id=? AND person_id=? AND revoked_t IS NULL", row["grant_id"], person_id):
+        raise NotYours()
+
+
 def site_person(store: Store, secret: str) -> str | None:
     """Whose live web client connection a browser holds, without opening anything: for the Allow page, which only
     offers to connect an app to them."""
@@ -520,8 +530,9 @@ def site_person(store: Store, secret: str) -> str | None:
 def start_on_site(store: Store, invite: str = "") -> str:
     """Someone new, starting in the web client: as a first tool call would make them, joined to the community of the
     invite they came with, under the same limits. Returns their browser's secret."""
-    found = community_by_invite(store, invite[:MAX_TEXT]) if invite else None
     with store.transaction():
+        # Found and joined in one moment: a link replaced in between must not let anyone in (security review).
+        found = community_by_invite(store, invite[:MAX_TEXT]) if invite else None
         if not found and _today(store, "uninvited") >= UNINVITED_PER_DAY:
             raise Refused("Bridge is taking no more new people without an invite today. Try again tomorrow, or ask "
                           "someone in a community for its invite link.")
@@ -554,6 +565,10 @@ def passkey_challenge(store: Store, purpose: str, person_id: str = "", **kept: s
     with store.transaction():
         if person_id:
             _acting(store, person_id)
+        # Anyone may ask for one, and each is a row until the sweep: a day's are capped (security review).
+        if _today(store, "passkey challenges") >= PASSKEY_CHALLENGES_PER_DAY:
+            raise Refused("too many passkey sign-ins today; try again tomorrow, or use your recovery code")
+        _count(store, "passkey challenges")
         _token(store, "passkey", data={**kept, "purpose": purpose, "person": person_id}, token=challenge,
                expires_t=store.now() + PASSKEY_CHALLENGE_S)
     return challenge
@@ -583,13 +598,14 @@ def passkey_ids(store: Store, person_id: str) -> list[str]:
 
 
 def add_passkey(store: Store, person_id: str, credential_id: str, public_key: bytes, sign_count: int, handle: str,
-                prf: bytes | None) -> bool:
+                prf: bytes | None, *, session: str) -> bool:
     """A passkey the person just made, verified by the caller (bridge/passkeys.py): its public key, and their key
     locked under what its PRF derives, if it gave anything. Returns whether it opens their key."""
     private = vault.key(person_id)
     locked = vault.lock(_passkey_key(prf), private, "person key") if prf else ""
     with store.transaction():
         _acting(store, person_id)
+        _still_signed_in(store, person_id, session)
         if store.one("SELECT 1 FROM passkeys WHERE id=?", credential_id):
             raise Refused("that passkey is added already")
         if store.one("SELECT COUNT(*) n FROM passkeys WHERE person_id=?", person_id)["n"] >= PASSKEYS:
@@ -607,13 +623,17 @@ def passkey(store: Store, credential_id: str) -> dict | None:
     return {**dict(row), "public_key": vault.decode(row["public_key"])} if row else None
 
 
-def key_passkey(store: Store, person_id: str, credential_id: str, sign_count: int, prf: bytes) -> None:
+def key_passkey(store: Store, person_id: str, credential_id: str, sign_count: int, prf: bytes, *,
+                session: str) -> None:
     """A passkey of theirs that gave no PRF output when it was made, just used (verified by the caller) with one: their
     key goes in locked under it, so it opens their key from now on."""
     private = vault.key(person_id)
     with store.transaction():
         _acting(store, person_id)
-        if not store.one("SELECT 1 FROM passkeys WHERE id=? AND person_id=?", credential_id, person_id):
+        _still_signed_in(store, person_id, session)
+        # Only one that opens nothing yet: a working passkey re-keyed with a wrong secret would lock its person out.
+        if not store.one("SELECT 1 FROM passkeys WHERE id=? AND person_id=? AND person_key=''", credential_id,
+                         person_id):
             raise NotYours()
         store.exec("UPDATE passkeys SET person_key=?, sign_count=?, used_t=? WHERE id=?",
                    vault.lock(_passkey_key(prf), private, "person key"), sign_count, store.now(), credential_id)
@@ -623,7 +643,7 @@ NO_PRF = ("this passkey cannot open your Bridge on this device (its password man
           "keeps your key under). Use your recovery code, or a code from your AI.")
 
 
-def passkey_sign_in(store: Store, credential_id: str, sign_count: int, prf: bytes | None) -> str:
+def passkey_sign_in(store: Store, credential_id: str, sign_count: int, prf: bytes | None, *, was: int = 0) -> str:
     """A sign-in with a passkey, verified by the caller: their key opened with what its PRF derives, or refused
     before anything is made; then a connection for this browser. Returns its secret."""
     with store.transaction():
@@ -631,6 +651,10 @@ def passkey_sign_in(store: Store, credential_id: str, sign_count: int, prf: byte
                         credential_id)
         if not row or row["deleted_t"] is not None:
             raise NotYours()
+        # Verified against `was`: another sign-in with the same count in between is a copied passkey (a synced one
+        # counts nothing, so stays 0).
+        if sign_count and row["sign_count"] != was:
+            raise Refused("that passkey was just used elsewhere: sign in again")
         if not row["person_key"] or not prf:
             raise Refused(NO_PRF)
         try:
@@ -654,12 +678,13 @@ def _recovery_hash(raw: str) -> str:
     return _hash("recovery " + raw)
 
 
-def new_recovery_code(store: Store, person_id: str) -> str:
+def new_recovery_code(store: Store, person_id: str, *, session: str) -> str:
     """Their recovery code, replacing any before it: shown once, used once, holding their key locked under it."""
     raw = "".join(secrets.choice(_ALPHABET) for _ in range(RECOVERY_CODE))
     private = vault.key(person_id)
     with store.transaction():
         _acting(store, person_id)
+        _still_signed_in(store, person_id, session)
         store.exec("INSERT OR REPLACE INTO recovery_codes(person_id, hash, person_key, created_t) VALUES (?,?,?,?)",
                    person_id, _recovery_hash(raw), vault.lock(vault.from_secret(raw, "recovery code"), private,
                                                               "person key"), store.now())
@@ -683,7 +708,7 @@ def recovery_sign_in(store: Store, code: str) -> tuple[str, str]:
             raise dead from None
         _site_cap(store, row["person_id"])
         secret, _ = _site_session(store, row["person_id"], private)
-        fresh = new_recovery_code(store, row["person_id"])
+        fresh = new_recovery_code(store, row["person_id"], session=secret)
     return secret, fresh
 
 
@@ -835,7 +860,8 @@ def sign_in_waiting(store: Store, request: str) -> dict | None:
     return json.loads(row["data"]) if row else None
 
 
-def allow(store: Store, request: str, invite: str = "", *, person: str = "") -> tuple[dict, str] | None:
+def allow(store: Store, request: str, invite: str = "", *, person: str = "",
+          session: str = "") -> tuple[dict, str] | None:
     """Allow pressed: a new connection, and an authorization code for its app. `invite` is the code the invite page
     left in this browser; only a community's current one is kept. It makes nobody: the connection's first tool call
     does (One door). `person`: Connect pressed instead, by someone signed in to the web client in that browser, whose
@@ -864,7 +890,8 @@ def allow(store: Store, request: str, invite: str = "", *, person: str = "") -> 
             # Their key goes on with the code too; the connection is made theirs only when the code is traded, so a
             # code never traded leaves nothing of theirs behind.
             _acting(store, person)
-            kept = {**kept, "person": person,
+            _still_signed_in(store, person, session)
+            kept = {**kept, "person": person, "allowed_t": store.now(),
                     "person_key": vault.lock(vault.from_secret(code, "code"), vault.key(person), "person key")}
         return data, _token(store, "code", grant_id=grant, data=kept, expires_t=store.now() + AUTH_CODE_S, token=code)
 
@@ -903,12 +930,19 @@ def exchange_code(store: Store, code: str) -> tuple[str, str] | None:
             return None
         store.exec("DELETE FROM tokens WHERE hash=?", row["hash"])
         data = json.loads(row["data"])
+        person = data.get("person", "")
+        # A Connect whose person has gone, or used a `new_link` code since, which ends every connection: a code held
+        # back until after would have brought one back (security review).
+        if person and (not alive(store, person) or store.one(
+                "SELECT 1 FROM link_codes WHERE person_id=? AND replace=1 AND used_t>=?", person,
+                data.get("allowed_t", 0))):
+            _end_grants(store, "id=?", row["grant_id"])
+            return None
         scopes, refresh = data.get("scopes") or [], secrets.token_urlsafe(32)
         connection = _connection_key(refresh)
         community = vault.unlock(vault.from_secret(code, "code"), data["invite_key"], "invite key") \
             if data.get("invite_key") else None
-        person = data.get("person", "")
-        if person and alive(store, person):
+        if person:
             # Connected to someone already there: theirs from now on, holding their key, and joined to the invite's
             # community, which a first call would not do for someone who already exists.
             private = vault.unlock(vault.from_secret(code, "code"), data["person_key"], "person key")

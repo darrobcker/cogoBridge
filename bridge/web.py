@@ -180,14 +180,19 @@ def create_app(store: Store, *, base_url: str, operator: str = "", claude_listin
             response.headers["Cache-Control"] = "no-store, no-transform"
             return response
         if form.get("choice") == "connect":
-            # Only pressed on this page: a form from anywhere else carries another Origin (and no cookie, by Lax).
-            if not signed or request.headers.get("origin") != "{0.scheme}://{0.netloc}".format(urlparse(base)):
+            # Only pressed on this page. Its form posts with Origin null (every page here says no-referrer), so the
+            # browser's own Sec-Fetch-Site says where the press came from; Origin only where a browser sends none.
+            # A form from anywhere else carries no cookie anyway, by Lax.
+            fetched = request.headers.get("sec-fetch-site")
+            here = fetched == "same-origin" if fetched else \
+                request.headers.get("origin") == "{0.scheme}://{0.netloc}".format(urlparse(base))
+            if not signed or not here:
                 return page("expired.html", 400)
 
             def connect():
                 with vault.keys():
                     person = net.person_for_site(store, secret, "allow connect")
-                    return net.allow(store, ref, invite, person=person)
+                    return net.allow(store, ref, invite, person=person, session=secret)
             try:
                 allowed = await run_in_threadpool(connect)
             except (net.Refused, net.NotYours, vault.Locked):

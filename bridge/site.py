@@ -123,7 +123,7 @@ def create_site(store, *, base_url: str, dev_sessions: Path | None = None) -> li
             raise _Turned(400, "send a JSON object")
         return data
 
-    def signed_in(tool: str, work: Callable[[str], object], *, data: dict | None = None):
+    def signed_in(tool: str, work: Callable[..., object], *, session: bool = False):
         """A route for one operation: the person behind the cookie, their key held for this call alone, then
         `work(person)` in the same thread. What `net` refuses is said as it said it; what is not theirs carries
         no detail; a cookie that opens nothing is signed out."""
@@ -141,7 +141,9 @@ def create_site(store, *, base_url: str, dev_sessions: Path | None = None) -> li
                     except (net.NotYours, net.Refused):
                         return None, None
                     try:
-                        return person, work(person, args)
+                        # `session`: what makes a new way in also checks, in its own transaction, that this
+                        # browser is still signed in (net._still_signed_in).
+                        return person, (work(person, args, secret) if session else work(person, args))
                     except net.NotYours:
                         return person, ({"error": "not_yours"}, 404)
                     except net.Refused as exc:
@@ -359,24 +361,24 @@ def create_site(store, *, base_url: str, dev_sessions: Path | None = None) -> li
     def add_options(person, args):
         return keys.options_to_add(person)
 
-    def add_passkey(person, args):
-        return {"opens": keys.add(person, credential(args), args.get("prf"))}
+    def add_passkey(person, args, secret):
+        return {"opens": keys.add(person, credential(args), args.get("prf"), secret)}
 
     def key_options(person, args):
         if text(args, "id") not in net.passkey_ids(store, person):
             raise net.NotYours()
         return keys.options_to_use(person, text(args, "id"))
 
-    def key_passkey(person, args):
-        keys.key(person, credential(args), args.get("prf"))
+    def key_passkey(person, args, secret):
+        keys.key(person, credential(args), args.get("prf"), secret)
         return {"opens": True}
 
     def remove_passkey(person, args):
         net.remove_passkey(store, person, text(args, "id"))
         return {"done": True}
 
-    def recovery(person, args):
-        return {"code": net.new_recovery_code(store, person)}
+    def recovery(person, args, secret):
+        return {"code": net.new_recovery_code(store, person, session=secret)}
 
     def ways_in(person, args):
         return net.ways_in(store, person)
@@ -415,11 +417,11 @@ def create_site(store, *, base_url: str, dev_sessions: Path | None = None) -> li
         Route("/passkey/sign-in", passkey_sign_in, methods=["POST"]),
         Route("/recovery/sign-in", session(recovery_sign_in), methods=["POST"]),
         Route("/passkey/add-options", signed_in("passkey", add_options), methods=["POST"]),
-        Route("/passkey/add", signed_in("passkey", add_passkey), methods=["POST"]),
+        Route("/passkey/add", signed_in("passkey", add_passkey, session=True), methods=["POST"]),
         Route("/passkey/key-options", signed_in("passkey", key_options), methods=["POST"]),
-        Route("/passkey/key", signed_in("passkey", key_passkey), methods=["POST"]),
+        Route("/passkey/key", signed_in("passkey", key_passkey, session=True), methods=["POST"]),
         Route("/passkey/remove", signed_in("passkey", remove_passkey), methods=["POST"]),
-        Route("/recovery", signed_in("recovery", recovery), methods=["POST"]),
+        Route("/recovery", signed_in("recovery", recovery, session=True), methods=["POST"]),
         Route("/ways-in", signed_in("check", ways_in)),
         Route("/waiting", signed_in("check", waiting)),
         Route("/yeses", signed_in("check", yeses)),

@@ -75,7 +75,7 @@ class Passkeys:
             exclude_credentials=[PublicKeyCredentialDescriptor(id=vault.decode(c))
                                  for c in net.passkey_ids(self.store, person)]))
 
-    def add(self, person: str, credential, prf) -> bool:
+    def add(self, person: str, credential, prf, session: str) -> bool:
         """Returns whether the new passkey opens their key (it gave a PRF secret)."""
         kept = net.take_passkey_challenge(self.store, self._challenge(credential), "add", person)
         if kept is None:
@@ -87,7 +87,8 @@ class Passkeys:
         except (WebAuthnException, KeyError, TypeError, ValueError):
             raise net.Refused(UNCHECKED) from None
         return net.add_passkey(self.store, person, vault.encode(verified.credential_id),
-                               verified.credential_public_key, verified.sign_count, kept["handle"], self._prf(prf))
+                               verified.credential_public_key, verified.sign_count, kept["handle"], self._prf(prf),
+                               session=session)
 
     def options_to_use(self, person: str = "", credential_id: str = "") -> dict:
         """To sign in with any passkey for this server; or, with `person` and `credential_id`, to use that one passkey
@@ -116,15 +117,15 @@ class Passkeys:
                 credential_current_sign_count=stored["sign_count"], require_user_verification=True)
         except (WebAuthnException, KeyError, TypeError, ValueError):
             raise net.Refused(UNCHECKED) from None
-        return credential_id, verified.new_sign_count
+        return credential_id, verified.new_sign_count, stored["sign_count"]
 
     def sign_in(self, credential, prf) -> str:
-        credential_id, count = self._verified(credential, "sign-in")
-        return net.passkey_sign_in(self.store, credential_id, count, self._prf(prf))
+        credential_id, count, was = self._verified(credential, "sign-in")
+        return net.passkey_sign_in(self.store, credential_id, count, self._prf(prf), was=was)
 
-    def key(self, person: str, credential, prf) -> None:
+    def key(self, person: str, credential, prf, session: str) -> None:
         prf = self._prf(prf)
         if prf is None:
             raise net.Refused(net.NO_PRF)
-        credential_id, count = self._verified(credential, "key", person)
-        net.key_passkey(self.store, person, credential_id, count, prf)
+        credential_id, count, _ = self._verified(credential, "key", person)
+        net.key_passkey(self.store, person, credential_id, count, prf, session=session)

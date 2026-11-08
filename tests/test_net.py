@@ -2322,15 +2322,20 @@ def test_starting_on_the_web_makes_someone_new_in_the_invites_community(world, s
         assert net.me(store, net.person_for_site(store, alone, "check"))["communities"] == []
 
 
+def browser_of(store, person: str) -> str:
+    """A web client connection of the person's: what adding a way in is asked through."""
+    return net.site_sign_in(store, net.link_code(store, person, replace=False))
+
+
 def test_a_passkey_opens_its_persons_key_only_with_what_its_prf_gives(world, store, keys):
     """The server keeps a passkey's public key and the person's key locked under what its PRF derives, which comes
     only with a sign-in: a wrong one, none, or a passkey that never gave one opens nothing, and nothing is made."""
     ola, _ = world.pair()
-    prf = b"\x01" * 32
-    assert net.add_passkey(store, ola, "cred-1", b"public", 0, net.passkey_handle(store, ola), prf)
-    assert not net.add_passkey(store, ola, "cred-2", b"public", 0, net.passkey_handle(store, ola), None)
+    prf, site = b"\x01" * 32, browser_of(store, ola)
+    assert net.add_passkey(store, ola, "cred-1", b"public", 0, net.passkey_handle(store, ola), prf, session=site)
+    assert not net.add_passkey(store, ola, "cred-2", b"public", 0, net.passkey_handle(store, ola), None, session=site)
     with pytest.raises(net.Refused):
-        net.add_passkey(store, ola, "cred-1", b"other", 0, "h", prf)                # never overwritten
+        net.add_passkey(store, ola, "cred-1", b"other", 0, "h", prf, session=site)        # never overwritten
     keys.clear()
     grants = store.one("SELECT COUNT(*) n FROM grants")["n"]
     for credential, given in (("cred-1", b"\x02" * 32), ("cred-1", None), ("cred-2", prf)):
@@ -2346,18 +2351,22 @@ def test_a_passkey_opens_its_persons_key_only_with_what_its_prf_gives(world, sto
 
 def test_a_passkey_that_gave_no_prf_when_made_can_be_given_a_key_later(world, store, keys):
     ola, _ = world.pair()
-    net.add_passkey(store, ola, "cred-1", b"public", 0, "h", None)
+    site = browser_of(store, ola)
+    net.add_passkey(store, ola, "cred-1", b"public", 0, "h", None, session=site)
     with pytest.raises(net.NotYours):
-        net.key_passkey(store, world.owner, "cred-1", 3, b"\x04" * 32)                  # only its own person's
-    net.key_passkey(store, ola, "cred-1", 1, b"\x03" * 32)
+        net.key_passkey(store, world.owner, "cred-1", 3, b"\x04" * 32, session=site)      # only its own person's
+    net.key_passkey(store, ola, "cred-1", 1, b"\x03" * 32, session=site)
+    with pytest.raises(net.NotYours):                       # and never one that opens already (security review)
+        net.key_passkey(store, ola, "cred-1", 2, b"\x05" * 32, session=site)
     keys.clear()
     with vault.keys():
-        assert net.person_for_site(store, net.passkey_sign_in(store, "cred-1", 2, b"\x03" * 32), "check") == ola
+        assert net.person_for_site(store, net.passkey_sign_in(store, "cred-1", 2, b"\x03" * 32, was=1),
+                                   "check") == ola
 
 
 def test_a_recovery_code_works_once_and_is_replaced(world, store, keys):
     ola, _ = world.pair()
-    code = net.new_recovery_code(store, ola)
+    code = net.new_recovery_code(store, ola, session=browser_of(store, ola))
     keys.clear()
     with vault.keys():
         secret, fresh = net.recovery_sign_in(store, code)
@@ -2372,8 +2381,9 @@ def test_a_recovery_code_works_once_and_is_replaced(world, store, keys):
 def test_forget_me_new_link_and_starting_over_remove_every_passkey_and_the_recovery_code(world, store):
     ola, rae = world.pair()
     for person in (ola, rae):
-        net.add_passkey(store, person, f"cred-{person}", b"public", 0, "h", b"\x01" * 32)
-        net.new_recovery_code(store, person)
+        site = browser_of(store, person)
+        net.add_passkey(store, person, f"cred-{person}", b"public", 0, "h", b"\x01" * 32, session=site)
+        net.new_recovery_code(store, person, session=site)
     net.forget_me(store, ola, "delete everything")
     net.site_sign_in(store, net.link_code(store, rae, replace=True))
     for person in (ola, rae):
@@ -2385,7 +2395,7 @@ def test_a_broken_connection_never_starts_over_someone_a_passkey_still_opens(wor
     their key: a passkey or a recovery code counts, or one broken browser would erase someone who only uses the web."""
     ola, _ = world.pair()
     secret = net.site_sign_in(store, net.link_code(store, ola, replace=False))
-    net.add_passkey(store, ola, "cred-1", b"public", 0, "h", b"\x01" * 32)
+    net.add_passkey(store, ola, "cred-1", b"public", 0, "h", b"\x01" * 32, session=secret)
     public = store.one("SELECT public FROM people WHERE id=?", ola)["public"]
     store.exec("UPDATE grants SET person_key='v1.broken' WHERE client_id=?", net.SITE)
     keys.clear()
@@ -2430,12 +2440,69 @@ def test_only_a_known_ai_app_may_be_connected_to_someone(world, store):
     net.register_client(store, "elsewhere", json.dumps({"client_name": "Claude",
                                                         "redirect_uris": ["https://app.test/callback"]}))
     net.register_client(store, "claude", json.dumps({"redirect_uris": ["https://claude.ai/api/mcp/auth_callback"]}))
+    site = browser_of(store, ola)
     with pytest.raises(net.Refused):
-        net.allow(store, net.sign_in_request(store, {"client_id": "elsewhere"}), person=ola)
-    _, code = net.allow(store, net.sign_in_request(store, {"client_id": "claude"}), person=ola)
+        net.allow(store, net.sign_in_request(store, {"client_id": "elsewhere"}), person=ola, session=site)
+    _, code = net.allow(store, net.sign_in_request(store, {"client_id": "claude"}), person=ola, session=site)
     _, refresh = net.exchange_code(store, code)
     assert net.renewal(store, refresh)["grant"] and store.one(
         "SELECT person_id FROM grants WHERE id=?", net.renewal(store, refresh)["grant"])["person_id"] == ola
+
+
+def test_a_browser_signed_out_by_new_link_makes_no_new_way_in(world, store):
+    """Signed in, then ended by a `new_link` code before its request lands: a passkey, a recovery code or a
+    Connect it asked for in that moment is refused, since it was checked apart from the write (security review)."""
+    ola, _ = world.pair()
+    stolen = browser_of(store, ola)
+    net.site_sign_in(store, net.link_code(store, ola, replace=True))
+    with pytest.raises(net.NotYours):
+        net.add_passkey(store, ola, "cred-1", b"public", 0, "h", b"\x01" * 32, session=stolen)
+    with pytest.raises(net.NotYours):
+        net.new_recovery_code(store, ola, session=stolen)
+    net.register_client(store, "claude", json.dumps({"redirect_uris": ["https://claude.ai/api/mcp/auth_callback"]}))
+    with pytest.raises(net.NotYours):
+        net.allow(store, net.sign_in_request(store, {"client_id": "claude"}), person=ola, session=stolen)
+
+
+def test_a_connect_code_held_back_past_new_link_brings_back_nothing(world, store):
+    """An app pressed Connect, then waited: its person used a `new_link` code, which ends every connection, and only
+    then did it trade the code (security review)."""
+    ola, _ = world.pair()
+    net.register_client(store, "claude", json.dumps({"redirect_uris": ["https://claude.ai/api/mcp/auth_callback"]}))
+    _, code = net.allow(store, net.sign_in_request(store, {"client_id": "claude"}), person=ola,
+                        session=browser_of(store, ola))
+    net.site_sign_in(store, net.link_code(store, ola, replace=True))
+    assert net.exchange_code(store, code) is None
+    assert not store.one("SELECT 1 FROM grants WHERE person_id=? AND client_id='claude'", ola)
+
+
+def test_starting_on_the_web_through_a_replaced_link_joins_nothing(world, store, keys):
+    net.invite_code(store, world.owner, world.community, new=True)
+    secret = net.start_on_site(store, world.invite)
+    with vault.keys():
+        assert net.me(store, net.person_for_site(store, secret, "check"))["communities"] == []
+
+
+def test_passkey_challenges_are_capped_a_day(store, monkeypatch):
+    monkeypatch.setattr(net, "PASSKEY_CHALLENGES_PER_DAY", 2)
+    net.passkey_challenge(store, "sign-in")
+    net.passkey_challenge(store, "sign-in")
+    with pytest.raises(net.Refused):
+        net.passkey_challenge(store, "sign-in")
+
+
+def test_a_counting_passkey_used_twice_at_once_signs_in_once(world, store):
+    """A passkey that counts its uses, verified against the same count twice: the second is a copy (security
+    review). A synced passkey counts nothing and is never refused for it."""
+    ola, _ = world.pair()
+    prf = b"\x01" * 32
+    net.add_passkey(store, ola, "cred-1", b"public", 3, "h", prf, session=browser_of(store, ola))
+    net.passkey_sign_in(store, "cred-1", 4, prf, was=3)
+    with pytest.raises(net.Refused, match="used elsewhere"):
+        net.passkey_sign_in(store, "cred-1", 4, prf, was=3)
+    net.add_passkey(store, ola, "cred-2", b"public", 0, "h", prf, session=browser_of(store, ola))
+    for _ in range(2):
+        net.passkey_sign_in(store, "cred-2", 0, prf, was=0)
 
 
 # -- being woken: MCP Events ---------------------------------------------------------------------------------------
@@ -2666,10 +2733,12 @@ def _writer_calls(w) -> dict:
     _, empty_code = net.allow(s, net.sign_in_request(s, {"client_id": "app"}))
     empty_grant = net.authorization_code(s, empty_code)["grant"]
     empty = net.person_for_grant(s, empty_grant, "check")
+    ola_site = net.site_sign_in(s, net.link_code(s, ola, replace=False))   # before her new_link code below
     linking = net.link_code(s, ola, replace=True)
     site_code = net.link_code(s, rae, replace=False)
     prf = b"p" * 32                                                  # what a passkey's PRF gave, for ola's
-    net.add_passkey(s, ola, "cred-ola", b"public", 0, "handle", prf)
+    net.add_passkey(s, ola, "cred-ola", b"public", 0, "handle", prf, session=ola_site)
+    net.add_passkey(s, ola, "cred-bare", b"public", 0, "handle", None, session=ola_site)
     challenge = net.passkey_challenge(s, "sign-in")
     # A key from before locks waiting for ola's connection, which takes its copy at its next renewal.
     s.exec("INSERT INTO escrow VALUES (?,?,?)", ola, vault.encode(vault.key(ola)), s.now() + 86400)
@@ -2725,11 +2794,12 @@ def _writer_calls(w) -> dict:
         "_site_session": (None, lambda: net.site_sign_in(s, site_code)),
         "_forget_ways_in": (ola, lambda: net.forget_me(s, ola, "delete everything")),
         "take_passkey_challenge": (None, lambda: net.take_passkey_challenge(s, challenge, "sign-in")),
-        "add_passkey": (ola, lambda: net.add_passkey(s, ola, "cred-new", b"public", 0, "handle", prf)),
-        "key_passkey": (ola, lambda: net.key_passkey(s, ola, "cred-ola", 1, prf)),
+        "add_passkey": (ola, lambda: net.add_passkey(s, ola, "cred-new", b"public", 0, "handle", prf,
+                                                     session=ola_site)),
+        "key_passkey": (ola, lambda: net.key_passkey(s, ola, "cred-bare", 1, prf, session=ola_site)),
         "passkey_sign_in": (ola, lambda: net.passkey_sign_in(s, "cred-ola", 1, prf)),
         "remove_passkey": (ola, lambda: net.remove_passkey(s, ola, "cred-ola")),
-        "new_recovery_code": (ola, lambda: net.new_recovery_code(s, ola)),
+        "new_recovery_code": (ola, lambda: net.new_recovery_code(s, ola, session=ola_site)),
         "subscribe": (ola, lambda: net.subscribe(s, ola, grant, "https://app.test/hook", SECRET, 7)),
         "unsubscribe": (ola, lambda: net.unsubscribe(s, ola, grant, "https://app.test/hook")),
         "drop_subscription": (None, lambda: net.drop_subscription(s, "sub_x")),
