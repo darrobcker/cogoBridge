@@ -10,8 +10,10 @@ import inspect
 import json
 import os
 import re
+import secrets
+import time
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 import cbor2
 import pytest
@@ -20,7 +22,7 @@ from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import ec
 from starlette.testclient import TestClient
 
-from bridge import cli, demo, net, site
+from bridge import cli, demo, net, site, vault
 from bridge.app import create_app
 from bridge.mcp_server import create_mcp
 
@@ -383,6 +385,71 @@ def test_starting_while_signed_in_joins_as_the_same_person(store, pages):
     assert browser(store, pages).post("/api/start", json={}, headers={"origin": "https://evil.test"}).status_code == 403
 
 
+def allow_page(http: TestClient, callback: str):
+    """An app adding Bridge as Claude does: it registers, sends its person to the Allow page, and gets back the page
+    and the means to finish (`finish(choice, origin)` presses a button; returns the app's code, or the answer)."""
+    client = http.post("/register", json={"redirect_uris": [callback], "client_name": "Claude",
+                                          "token_endpoint_auth_method": "none"}).json()
+    verifier = secrets.token_urlsafe(48)
+    challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
+    asked = http.get("/authorize", params={"response_type": "code", "client_id": client["client_id"],
+                                           "redirect_uri": callback, "code_challenge": challenge,
+                                           "code_challenge_method": "S256", "state": "st8"}, follow_redirects=False)
+    ref = parse_qs(urlparse(asked.headers["location"]).query)["r"][0]
+
+    def finish(choice: str, origin: str | None = BASE, trade: bool = True):
+        back = http.post("/allow", data={"r": ref, "choice": choice}, follow_redirects=False,
+                         headers={"origin": origin} if origin else {})
+        if back.status_code != 303 or not trade:
+            return back
+        code = parse_qs(urlparse(back.headers["location"]).query)["code"][0]
+        return http.post("/token", data={"grant_type": "authorization_code", "code": code, "redirect_uri": callback,
+                                         "client_id": client["client_id"], "code_verifier": verifier}).json()
+    return http.get("/allow", params={"r": ref}).text, finish
+
+
+CLAUDE = "https://claude.ai/api/mcp/auth_callback"
+
+
+def test_signed_in_on_the_web_an_ai_connects_to_the_same_person(store, pages, clock, keys):
+    """Started on the web, someone adds Bridge to Claude: the Allow page offers to connect it to them, and the app's
+    connection then opens their key, joined to the invite's community as well. No code to carry over."""
+    clock.t = time.time()
+    world = World(store)
+    other, invite = net.create_community(store, world.owner, "Climbers")
+    http = browser(store, pages)
+    http.post("/api/start", json={"invite": world.invite}, headers=JSON)
+    http.post("/api/setup", json={"name": "Kim Lee"}, headers=JSON)
+    keys.clear()
+    http.get(f"/join/{invite}")                                     # the invite page this browser came through
+    page, finish = allow_page(http, CLAUDE)
+    assert 'value="connect"' in page
+    tokens = finish("connect")
+    grant = net.access(store, tokens["access_token"])["grant"]
+    with vault.keys():
+        person = net.person_for_grant(store, grant, "check", tokens["access_token"])
+        assert net.me(store, person)["name"] == "Kim Lee"
+        assert {c["name"] for c in net.me(store, person)["communities"]} == {"Friends", "Climbers"}
+
+
+def test_only_a_known_ai_app_and_only_this_pages_press_may_connect(store, pages, clock):
+    """An app returning anywhere else gets the usual new account; a Connect press from another site, or with no
+    Origin, connects nothing; a code never traded leaves no connection of theirs."""
+    clock.t = time.time()
+    world = World(store)
+    ola, _ = world.pair()
+    http = signed_in(store, pages, ola)
+    page, finish = allow_page(http, "https://app.test/callback")
+    assert 'value="connect"' not in page and finish("connect").status_code == 400
+    for origin in ("https://evil.test", None):
+        _, finish = allow_page(http, CLAUDE)
+        assert finish("connect", origin).status_code == 400
+    _, finish = allow_page(http, CLAUDE)
+    assert finish("connect", trade=False).status_code == 303                            # pressed, never traded
+    assert store.one("SELECT COUNT(*) n FROM grants WHERE person_id=? AND client_id<>?", ola, net.SITE)["n"] == 0
+    assert not browser(store, pages).get("/allow", params={"r": "nope"}).text.count('value="connect"')
+
+
 # -- from the security review ----------------------------------------------------------------------------------
 
 def test_a_body_is_read_no_further_than_the_limit(two):
@@ -504,6 +571,10 @@ def test_demo_sign_in_only_with_dev_and_only_on_this_machine(store, pages, tmp_p
         assert dev.post("/api/sign-out", json={}, headers=here).status_code == 200
         assert dev.get("/api/waiting").status_code == 401
     assert cli._on_this_machine("http://127.0.0.1:4318", "127.0.0.1")
+    at_name = TestClient(create_app(store, base_url="http://localhost:4318", site=str(pages), dev=True,
+                                    dev_sessions=sessions), base_url="http://127.0.0.1:4318")
+    moved = at_name.get("/view/?x=1", follow_redirects=False)
+    assert moved.status_code == 307 and moved.headers["location"] == "http://localhost:4318/view/?x=1"
     for url, host in (("https://bridge.test", "127.0.0.1"), ("http://127.0.0.1:4318", "0.0.0.0"),
                       ("http://192.168.1.5:4318", "127.0.0.1")):
         assert not cli._on_this_machine(url, host)

@@ -2423,6 +2423,21 @@ def test_a_database_from_before_passkeys_gains_their_tables(tmp_path):
     assert net.ways_in(store, "p-nobody") == {"passkeys": [], "recovery": False, "browsers": 0}
 
 
+def test_only_a_known_ai_app_may_be_connected_to_someone(world, store):
+    """Connecting at Allow hands the app the person's key: never to an app that may return anywhere else, whatever
+    it calls itself."""
+    ola, _ = world.pair()
+    net.register_client(store, "elsewhere", json.dumps({"client_name": "Claude",
+                                                        "redirect_uris": ["https://app.test/callback"]}))
+    net.register_client(store, "claude", json.dumps({"redirect_uris": ["https://claude.ai/api/mcp/auth_callback"]}))
+    with pytest.raises(net.Refused):
+        net.allow(store, net.sign_in_request(store, {"client_id": "elsewhere"}), person=ola)
+    _, code = net.allow(store, net.sign_in_request(store, {"client_id": "claude"}), person=ola)
+    _, refresh = net.exchange_code(store, code)
+    assert net.renewal(store, refresh)["grant"] and store.one(
+        "SELECT person_id FROM grants WHERE id=?", net.renewal(store, refresh)["grant"])["person_id"] == ola
+
+
 # -- being woken: MCP Events ---------------------------------------------------------------------------------------
 
 SECRET = "whsec_" + "A" * 32                                  # 24 bytes of key

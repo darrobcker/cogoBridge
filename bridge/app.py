@@ -75,7 +75,8 @@ def create_app(store: Store, *, base_url: str, operator: str = "", site: str = "
           if site else []),
         Mount("/", app=create_web(store, base_url=base, operator=operator, site=site, dev=dev, **pages)),
     ]
-    middleware = [Middleware(_OneHost, www=f"www.{urlparse(base).hostname}", base=base),
+    middleware = [*([Middleware(_ThisMachine, base=base)] if dev and site else []),
+                  Middleware(_OneHost, www=f"www.{urlparse(base).hostname}", base=base),
                   Middleware(_Issuer, issuer=str(issuer)),
                   Middleware(AuthenticationMiddleware, backend=BearerAuthBackend(ProviderTokenVerifier(provider))),
                   Middleware(AuthContextMiddleware)]
@@ -134,6 +135,23 @@ class _Issuer:
                     for k, v in message.get("headers", [])]}
             await send(message)
         await self.app(scope, receive, named)
+
+
+class _ThisMachine:
+    """`bridge serve --dev` only: the demo's one address, localhost (passkeys take a name, never an IP address), so a
+    tab still open at 127.0.0.1 is sent there, where its cookie and every request's Origin match."""
+
+    def __init__(self, app, *, base: str):
+        self.app, self.base, self.host = app, base, urlparse(base).netloc.encode()
+
+    async def __call__(self, scope, receive, send):
+        host = dict(scope.get("headers", [])).get(b"host", b"") if scope["type"] == "http" else b""
+        if host and host != self.host and host.split(b":")[0] == b"127.0.0.1":
+            query = scope.get("query_string", b"").decode()
+            there = self.base + scope["path"] + (f"?{query}" if query else "")
+            await RedirectResponse(there, 307)(scope, receive, send)
+            return
+        await self.app(scope, receive, send)
 
 
 class _OneHost:

@@ -20,13 +20,15 @@ from urllib.parse import parse_qs, quote, urlparse
 from jinja2 import ChoiceLoader, Environment, FileSystemLoader, TemplateNotFound, select_autoescape
 from mcp.server.auth.provider import construct_redirect_uri
 from starlette.applications import Starlette
+from starlette.concurrency import run_in_threadpool
 from starlette.requests import Request
 from starlette.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, Response
 from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 
-from . import net
+from . import net, vault
 from .mcp_server import said
+from .site import cookie_name
 from .store import Store
 
 DAY, YEAR = "public, max-age=86400", "public, max-age=31536000, immutable"
@@ -96,7 +98,7 @@ def create_app(store: Store, *, base_url: str, operator: str = "", claude_listin
 
     def page(name: str, status: int = 200, **context) -> HTMLResponse:
         response = HTMLResponse(env.get_template(name).render(operator=operator, connector=connector, contact=contact,
-                                                              source=source,
+                                                              source=source, web_client=bool(site),
                                                               claude_add=claude_add, claude_listed=bool(claude_listing),
                                                               chatgpt_listing=chatgpt_listing, **context),
                                 status_code=status)
@@ -164,15 +166,38 @@ def create_app(store: Store, *, base_url: str, operator: str = "", claude_listin
         invite = request.cookies.get(INVITE, "")[:40]
         if not _their_app(request.cookies.get(AI, ""), waiting["redirect_uri"]):
             invite = ""
+        # Signed in to the web client in this browser, with a known AI app asking: it may connect to that person
+        # (PROTOCOL.md §5). Never by the name an app gives itself.
+        secret = request.cookies.get(cookie_name(base), "")[:200] if site else ""
+        signed = bool(secret and net.knownApp(store, waiting["client_id"]) and net.site_person(store, secret))
         if request.method != "POST":
             info = json.loads(net.client(store, waiting["client_id"]) or "{}")
             # Its name opens with the code the invite page left: the server keeps it only locked.
             community = net.community_by_invite(store, invite) if invite else None
             response = page("allow.html", ref=ref, app=(info.get("client_name") or "An app")[:60],
-                            host=urlparse(waiting["redirect_uri"]).hostname or "",
+                            host=urlparse(waiting["redirect_uri"]).hostname or "", connect=signed,
                             community=community, small=bool(community) and net.small(store, community["id"]))
             response.headers["Cache-Control"] = "no-store, no-transform"
             return response
+        if form.get("choice") == "connect":
+            # Only pressed on this page: a form from anywhere else carries another Origin (and no cookie, by Lax).
+            if not signed or request.headers.get("origin") != "{0.scheme}://{0.netloc}".format(urlparse(base)):
+                return page("expired.html", 400)
+
+            def connect():
+                with vault.keys():
+                    person = net.person_for_site(store, secret, "allow connect")
+                    return net.allow(store, ref, invite, person=person)
+            try:
+                allowed = await run_in_threadpool(connect)
+            except (net.Refused, net.NotYours, vault.Locked):
+                return page("expired.html", 400)
+            if allowed is None:
+                return page("expired.html", 400)
+            data, code = allowed
+            net.log_call(store, f"allow connect {urlparse(data['redirect_uri']).hostname or ''}"[:80])
+            return RedirectResponse(construct_redirect_uri(data["redirect_uri"], code=code, state=data["state"]),
+                                    status_code=303)
         if form.get("choice") != "allow":
             gone = net.deny(store, ref) or waiting
             return RedirectResponse(construct_redirect_uri(gone["redirect_uri"], error="access_denied",

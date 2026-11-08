@@ -77,8 +77,7 @@ def create_site(store, *, base_url: str, dev_sessions: Path | None = None) -> li
         raise ValueError("the web client needs an https address, unless it is on this machine")
     if dev_sessions is not None and not (not secure and _loopback(base)):
         raise ValueError("the demo sign-in is only for a server on this machine")
-    # __Host-: only over https, for this host alone, for every path; the plain name on a server of one's own machine.
-    cookie = "__Host-bridge" if secure else "bridge"
+    cookie = cookie_name(base)
 
     def answer(body, status: int = 200) -> JSONResponse:
         response = JSONResponse(body, status_code=status)
@@ -439,6 +438,11 @@ def create_site(store, *, base_url: str, dev_sessions: Path | None = None) -> li
     if dev_sessions is not None:
         routes += _dev(dev_sessions, body, answer, keep)
     return routes
+
+
+def cookie_name(base_url: str) -> str:
+    """__Host-: only over https, for this host alone, for every path; the plain name on one's own machine."""
+    return "__Host-bridge" if base_url.startswith("https://") else "bridge"
 
 
 def _loopback(url: str) -> bool:

@@ -11,6 +11,7 @@ can act on) or `NotYours` (which says nothing about whether the thing exists).
 """
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import re
@@ -834,10 +835,12 @@ def sign_in_waiting(store: Store, request: str) -> dict | None:
     return json.loads(row["data"]) if row else None
 
 
-def allow(store: Store, request: str, invite: str = "") -> tuple[dict, str] | None:
+def allow(store: Store, request: str, invite: str = "", *, person: str = "") -> tuple[dict, str] | None:
     """Allow pressed: a new connection, and an authorization code for its app. `invite` is the code the invite page
     left in this browser; only a community's current one is kept. It makes nobody: the connection's first tool call
-    does (One door)."""
+    does (One door). `person`: Connect pressed instead, by someone signed in to the web client in that browser, whose
+    key this call holds: the connection becomes theirs when the app trades the code, and only for a known AI app
+    (PROTOCOL.md §5)."""
     found = community_by_invite(store, invite[:40]) if invite else None
     with store.transaction():
         row = _live_token(store, request, "request")
@@ -847,14 +850,22 @@ def allow(store: Store, request: str, invite: str = "") -> tuple[dict, str] | No
         if _today(store, "allows") >= ALLOWS_PER_DAY:
             raise Refused("too many sign-ins today; try again tomorrow")
         _count(store, "allows")
-        store.exec("DELETE FROM tokens WHERE hash=?", row["hash"])
         data = json.loads(row["data"])
+        if person and not knownApp(store, data["client_id"]):
+            raise Refused("only an app whose every return address is a known AI app's may connect to someone")
+        store.exec("DELETE FROM tokens WHERE hash=?", row["hash"])
         grant, code = _new_id(store, "grants", "k", 16), secrets.token_urlsafe(32)
         store.exec("INSERT INTO grants(id, client_id, invite, created_t) VALUES (?,?,?,?)", grant, data["client_id"],
                    found["invite_hash"] if found else "", store.now())
         # The community's key goes on with the code, locked under it, until the app trades it for its tokens.
         kept = {**data, "invite_key": vault.lock(vault.from_secret(code, "code"), found["key"], "invite key")} \
             if found else data
+        if person:
+            # Their key goes on with the code too; the connection is made theirs only when the code is traded, so a
+            # code never traded leaves nothing of theirs behind.
+            _acting(store, person)
+            kept = {**kept, "person": person,
+                    "person_key": vault.lock(vault.from_secret(code, "code"), vault.key(person), "person key")}
         return data, _token(store, "code", grant_id=grant, data=kept, expires_t=store.now() + AUTH_CODE_S, token=code)
 
 
@@ -894,8 +905,21 @@ def exchange_code(store: Store, code: str) -> tuple[str, str] | None:
         data = json.loads(row["data"])
         scopes, refresh = data.get("scopes") or [], secrets.token_urlsafe(32)
         connection = _connection_key(refresh)
-        if data.get("invite_key"):
-            community = vault.unlock(vault.from_secret(code, "code"), data["invite_key"], "invite key")
+        community = vault.unlock(vault.from_secret(code, "code"), data["invite_key"], "invite key") \
+            if data.get("invite_key") else None
+        person = data.get("person", "")
+        if person and alive(store, person):
+            # Connected to someone already there: theirs from now on, holding their key, and joined to the invite's
+            # community, which a first call would not do for someone who already exists.
+            private = vault.unlock(vault.from_secret(code, "code"), data["person_key"], "person key")
+            store.exec("UPDATE grants SET person_id=?, person_key=? WHERE id=?", person,
+                       vault.lock(connection, private, "person key"), row["grant_id"])
+            found = store.one("SELECT c.id FROM communities c JOIN grants g ON g.invite=c.invite_hash WHERE g.id=?",
+                              row["grant_id"]) if community else None
+            if found:
+                with contextlib.suppress(Refused, NotYours):
+                    join(store, person, found["id"], key=community)
+        elif community:
             store.exec("UPDATE grants SET invite_key=? WHERE id=?", vault.lock(connection, community, "invite key"),
                        row["grant_id"])
         return (_access_token(store, row["grant_id"], scopes, connection),

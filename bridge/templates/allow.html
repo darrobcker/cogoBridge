@@ -20,7 +20,13 @@ alone: anyone who uses it can act as you, and can open the link your AI gives yo
 <p>Next: open a new chat there and say &ldquo;On Bridge, find me someone to &hellip;&rdquo;</p>
 <form method="post">
 <input type="hidden" name="r" value="{{ ref }}">
+{% if connect %}
+<p>You are signed in to Bridge in this browser. Connect {{ app }} to that same Bridge, or give it one of its own.</p>
+<button type="submit" name="choice" value="connect">Connect to my Bridge</button>
+<button type="submit" name="choice" value="allow">A separate Bridge</button>
+{% else %}
 <button type="submit" name="choice" value="allow">Allow</button>
+{% endif %}
 <button type="submit" name="choice" value="deny">Cancel</button>
 </form>
 <p class="muted">Nothing to fill in: no email, no password. Allow makes a new account for this app. Already use
