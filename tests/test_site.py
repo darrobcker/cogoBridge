@@ -205,6 +205,22 @@ def test_signing_out_and_deleting_end_the_browsers_connection(two):
     assert rae.get("/api/waiting").status_code == 401
 
 
+def test_whether_a_browser_is_signed_in_is_answered_without_a_call(two, store):
+    """The corner word on every page asks this: it opens nothing, so it logs no call and keeps nobody's key."""
+    _, ola, rae = two
+    calls = store.one("SELECT COUNT(*) n FROM calls")["n"]
+    asked = ola.get("/api/session")
+    assert asked.json() == {"signed_in": True} and "set-cookie" not in asked.headers
+    assert store.one("SELECT COUNT(*) n FROM calls")["n"] == calls
+    ola.post("/api/sign-out", json={}, headers=JSON)
+    rae.post("/api/forget", json={"confirm": "delete everything"}, headers=JSON)
+    for http in (ola, rae):
+        assert http.get("/api/session").json() == {"signed_in": False}
+    http = TestClient(ola.app, base_url=BASE)
+    http.cookies.set("__Host-bridge", "not-a-secret")
+    assert http.get("/api/session").json() == {"signed_in": False}
+
+
 def test_the_cookie_is_no_bearer_token_for_mcp(store, pages):
     world = World(store)
     ola, _ = world.pair()

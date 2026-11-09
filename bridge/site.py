@@ -295,6 +295,12 @@ def create_site(store, *, base_url: str, dev_sessions: Path | None = None) -> li
     async def meta(request: Request) -> Response:
         return answer({"base": base, "connector": f"{base}/mcp", "days": net.YES_WAITS_S // 86400})
 
+    async def signed_in_here(request: Request) -> Response:
+        """Whether this browser is signed in, opening nothing and logging no call: for the word in the site's corner
+        on every page, which takes the person's name from what this browser last saw in View."""
+        person = await run_in_threadpool(net.site_person, store, request.cookies.get(cookie, "")[:200])
+        return answer({"signed_in": bool(person)})
+
     def session(make: Callable[[dict], tuple[str, dict]]):
         """A route that signs this browser in, every way it can: `make(data)` returns the new connection's secret and
         what to answer. The browser's last connection, which the new cookie replaces, ends with it."""
@@ -409,6 +415,7 @@ def create_site(store, *, base_url: str, dev_sessions: Path | None = None) -> li
 
     routes = [
         Route("/meta", meta),
+        Route("/session", signed_in_here),
         Route("/sign-in", sign_in, methods=["POST"]),
         Route("/sign-out", sign_out, methods=["POST"]),
         Route("/start", start, methods=["POST"]),
