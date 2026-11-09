@@ -15,7 +15,7 @@ For coding agents and new contributors. Read `PROTOCOL.md` first: it is short, a
 | `bridge/web.py`, `templates/`, `static/` | The invite pages, the Allow page sign-in opens, the consent page, a person's yes page (where a yes is confirmed), `/docs` when a theme gives one, and the not-found page, in plain dress; `BRIDGE_THEME` gives a server its own look. Beside them, only the web client (`site.py`) |
 | `bridge/site.py` | The web client's API (`/api/…`, PROTOCOL.md §5): one route per operation, each a call into `net`, signed in by a cookie that holds a connection's secret. No SQL and no rule of its own. `BRIDGE_SITE` serves the client's own files beside it |
 | `bridge/oauth.py` | Sign-in: the MCP SDK's OAuth server, answered from `net`, where its rules are |
-| `bridge/notify.py` | Wake-ups: the ntfy.sh nudge, and MCP Events signed to the apps that subscribed |
+| `bridge/notify.py` | MCP Events signed to the apps that subscribed |
 | `bridge/app.py`, `cli.py` | ASGI wiring; operator commands |
 | `bridge/demo.py` | `bridge demo`: a new scratch home of made-up people in every state, for working on the web client; `bridge serve --dev` signs in as them, on this machine only |
 | `tests/test_net.py` | One section per protocol rule. Reproductions from audits and simulations live here |

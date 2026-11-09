@@ -278,9 +278,9 @@ def create_site(store, *, base_url: str, dev_sessions: Path | None = None) -> li
         raise net.Refused("unknown action")
 
     def setup(person, args):
-        fields = {k: text(args, k, 4000) or None for k in ("name", "contact", "about", "notify")}
-        done = net.setup(store, person, **fields)
-        return {"outcome": done, "me": net.me(store, person)}
+        fields = {k: text(args, k, 4000) or None for k in ("name", "contact", "about")}
+        net.setup(store, person, **fields)
+        return {"me": net.me(store, person)}
 
     def code(person, args):
         """A code for another app, or, with `new_link`, one whose use ends every other connection (as `setup`)."""

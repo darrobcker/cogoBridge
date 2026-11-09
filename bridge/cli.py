@@ -42,7 +42,6 @@ def cmd_serve(args) -> None:
     from . import notify
     from .app import create_app
     store = _store()
-    store.on_nudge = notify.send    # only for people who asked for nudges, and apps that asked to be woken
     store.on_wake = lambda sub: notify.wake(sub, net.WAITING, lambda: net.drop_subscription(store, sub["id"]))
     # Passkeys take a name, never an address: a demo serves at localhost.
     url = os.environ.get("BRIDGE_BASE_URL") or f"http://{'localhost' if args.dev else '127.0.0.1'}:{args.port}"

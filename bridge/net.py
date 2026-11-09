@@ -63,14 +63,7 @@ WAKE_S = 30 * 86400               # the longest an app's subscription to be woke
 ESCROW_S = 14 * 86400             # a key from before locks waits this long for its person's connections to copy it
 YES_WAITS_S = 3 * 86400           # a yes waits this long for its person to confirm it on their yes page
 MAX_TEXT, MAX_NAME, MAX_CONTACT = 2000, 80, 200
-NUDGE_EVERY_S = 600               # at most one nudge per person per ten minutes
-NTFY = "https://ntfy.sh/"         # where every nudge goes: a topic the server made, never an address a member chose
-
-
-def nudges_on(notify: str) -> bool:
-    """A bare ntfy.sh topic, as the server makes them. A value from before with a query, such as ?email=, had
-    ntfy.sh forward the line to an address a member chose (review 3); a plain topic from before still works."""
-    return bool(re.fullmatch(re.escape(NTFY) + r"[A-Za-z0-9_-]{1,64}", notify))
+WAKE_EVERY_S = 600                # at most one event per person per ten minutes
 
 
 class Refused(Exception):
@@ -309,22 +302,9 @@ def new_person(store: Store) -> str:
     return pid
 
 
-NEW, TESTED, TOO_SOON, OFF = "new", "tested", "too soon", "off"
-
-
 def setup(store: Store, person_id: str, *, name: str | None = None, contact: str | None = None,
-          about: str | None = None, notify: str | None = None) -> str | None:
-    """Any of them, whenever. Name and contact are shown only to the other side of a deal. `notify` "on": the
-    first time, an unguessable ntfy.sh topic for their nudges (NEW); after that, a test nudge to it (TESTED, or
-    TOO_SOON within a day of any nudge). "off" clears it, so a later "on" makes a new one. Returns what `notify` did."""
-    if notify is not None:
-        notify = {"none": "off"}.get(notify.strip().lower(), notify.strip().lower())
-        if notify not in ("on", "off"):
-            raise Refused('nudges take notify="on" now (or "off"): the server makes the address. If your tool list '
-                          "says to pass a link, it is out of date: refresh Bridge's tools in your app's settings, "
-                          "or start a new chat. Nothing was saved: send the other fields again without "
-                          'notify, or with notify="on"')
-    outcome = None
+          about: str | None = None) -> None:
+    """Set any of them, whenever. Name and contact are shown only to the other side of a deal."""
     with store.transaction():
         _acting(store, person_id)
         if name is not None:
@@ -348,43 +328,26 @@ def setup(store: Store, person_id: str, *, name: str | None = None, contact: str
                 about = ""
             store.exec("UPDATE people SET about=? WHERE id=?", vault.lock_text(_self(person_id), about, "about"),
                        person_id)
-        if notify == "off":
-            store.exec("UPDATE people SET notify='' WHERE id=?", person_id)
-            outcome = OFF
-        elif notify == "on" and not nudges_on(store.one("SELECT notify FROM people WHERE id=?", person_id)["notify"]):
-            # 26 of the id alphabet, about 128 bits: typed by hand into the phone app, often off a computer's screen.
-            topic = "".join(secrets.choice(_ALPHABET) for _ in range(26))
-            store.exec("UPDATE people SET notify=? WHERE id=?", NTFY + topic, person_id)
-            outcome = NEW
-    if notify == "on" and not outcome:
-        # The only nudge a person can set off with nothing aimed at them, so the only one held to a day (review).
-        outcome = TESTED if _nudge(store, person_id, every=86400, test=True) else TOO_SOON
-    return outcome
+    return None
 
 
-def _nudge(store: Store, *people: str, every: float = NUDGE_EVERY_S, test: bool = False) -> int:
-    """After a commit: tell whoever asked for it that something is waiting — at their ntfy.sh topic, and to each app
-    that subscribed to be woken for them (PROTOCOL.md §5). Never what or who, and never for a yes, which the other
-    side must not learn of; one limit for all of a person's wake-ups together. A `test` goes to the topic alone.
-    Each is logged, with nobody's id, so stats can show the day's count against ntfy.sh's limit. Returns how many
-    people were woken."""
+def _wake(store: Store, *people: str) -> int:
+    """After a commit, send an empty event to each subscribed app. Never what or who, and never for a yes, which
+    the other side must not learn of; at most once per person per ten minutes. Returns how many people were woken."""
     sent = 0
     for pid in people:
         with store.transaction():
-            p = store.one("SELECT notify, nudged_t, deleted_t FROM people WHERE id=?", pid)
-            if not p or p["deleted_t"] or (p["nudged_t"] or 0) > store.now() - every:
+            p = store.one("SELECT woken_t, deleted_t FROM people WHERE id=?", pid)
+            if not p or p["deleted_t"] or (p["woken_t"] or 0) > store.now() - WAKE_EVERY_S:
                 continue
-            topic = p["notify"] if nudges_on(p["notify"]) else ""
-            apps = [] if test else [json.loads(r["data"]) for r in store.all(
+            apps = [json.loads(r["data"]) for r in store.all(
                 "SELECT t.data FROM tokens t JOIN grants g ON g.id=t.grant_id WHERE t.kind='subscription' AND "
                 "g.person_id=? AND g.revoked_t IS NULL AND t.expires_t>?", pid, store.now())]
-            if not (topic or apps):
+            if not apps:
                 continue
-            store.exec("UPDATE people SET nudged_t=? WHERE id=?", store.now(), pid)
-            for what in (["nudge"] if topic else []) + ["wake"] * len(apps):
-                log_call(store, what)
-        if topic and store.on_nudge:
-            store.on_nudge(topic)
+            store.exec("UPDATE people SET woken_t=? WHERE id=?", store.now(), pid)
+            for _ in apps:
+                log_call(store, "wake")
         for app in apps:
             if store.on_wake:
                 store.on_wake(app)
@@ -395,7 +358,7 @@ def _nudge(store: Store, *people: str, every: float = NUDGE_EVERY_S, test: bool 
 def me(store: Store, person_id: str) -> dict:
     """The person as their own assistant sees them. For each community, whether it is small; for one they own,
     how many others have joined it: a count, never names."""
-    p = store.one("SELECT name, contact, about, notify FROM people WHERE id=?", person_id)
+    p = store.one("SELECT name, contact, about FROM people WHERE id=?", person_id)
     mine = _self(person_id)
     communities = []
     for c in store.all("SELECT c.id, c.created_by=? owner FROM communities c JOIN memberships m "
@@ -411,7 +374,7 @@ def me(store: Store, person_id: str) -> dict:
             item["joined"] = store.one("SELECT COUNT(*) n FROM memberships WHERE community_id=? AND person_id<>?",
                                        c["id"], person_id)["n"]
         communities.append(item)
-    return {**{k: vault.unlock_text(mine, p[k], k) for k in ("name", "contact", "about")}, "notify": p["notify"],
+    return {**{k: vault.unlock_text(mine, p[k], k) for k in ("name", "contact", "about")},
             "communities": communities}
 
 
@@ -1109,10 +1072,10 @@ def drop_subscription(store: Store, sub: str) -> None:
 
 
 def holds_nothing(store: Store, person_id: str) -> bool:
-    """A brand-new account, as far as anyone could lose anything by erasing it: no name, contact, notes or nudges, no
+    """A brand-new account, as far as anyone could lose anything by erasing it: no name, contact or notes, no
     open need, no conversation, and no community of its own."""
-    me = store.one("SELECT name, contact, about, notify FROM people WHERE id=?", person_id)
-    return not (me["name"] or me["contact"] or me["about"] or me["notify"]
+    me = store.one("SELECT name, contact, about FROM people WHERE id=?", person_id)
+    return not (me["name"] or me["contact"] or me["about"]
                 or store.one("SELECT 1 FROM needs WHERE author_id=? AND closed_t IS NULL AND expires_t>? LIMIT 1",
                              person_id, store.now())
                 or store.one("SELECT 1 FROM conversation_people WHERE person_id=? LIMIT 1", person_id)
@@ -1204,14 +1167,14 @@ def use_link_code(store: Store, person_id: str, grant_id: str, code: str, token:
 
 
 def log_call(store: Store, what: str) -> None:
-    """A row in nobody's name: a Join press, a nudge, a retired tool name. A person's calls are logged only where
-    their connector is looked up, in the same step: logged after it, a row could outlive their forget_me (review)."""
+    """A row in nobody's name: a Join press, an event wake-up, a retired tool name. A person's calls are logged only
+    where their connector is looked up, in the same step: logged after it, a row could outlive forget_me (review)."""
     with store.transaction():
         store.exec("INSERT INTO calls(t, person_id, tool) VALUES (?,'',?)", store.now(), what)
 
 
 def forget_me(store: Store, person_id: str, confirm: str) -> None:
-    """Their name, contact, about, nudge topic and needs are erased, every conversation they were in is over and
+    """Their name, contact, about and needs are erased, every conversation they were in is over and
     emptied on both sides, and every connection of theirs ends. What a deal already handed the other
     person cannot be recalled. Their random id stays where other people's rows point at it; it no
     longer leads to anything. A second one in flight is NotYours."""
@@ -1221,7 +1184,7 @@ def forget_me(store: Store, person_id: str, confirm: str) -> None:
         # A second one in flight wrote again, and moved the moment the first was made (review).
         _acting(store, person_id)
         now = store.now()
-        store.exec("UPDATE people SET name='', contact='', about='', notify='', nudged_t=NULL, deleted_t=?, "
+        store.exec("UPDATE people SET name='', contact='', about='', woken_t=NULL, deleted_t=?, "
                    "public='' WHERE id=?", now, person_id)
         # Every key of theirs, and every name or contact they sealed to anyone: what nothing opens is gone.
         store.exec("DELETE FROM escrow WHERE person_id=?", person_id)
@@ -1849,7 +1812,7 @@ def reply(store: Store, person_id: str, to: str, text: str, *, agree_too: bool =
         if _left_before_the_deal(store, conv, person_id):
             raise Refused(_GONE_FROM)
         if conv["deal_t"]:
-            # Carrying messages after a deal let a deal partner message and nudge someone for months with no
+            # Carrying messages after a deal let a deal partner keep reaching someone for months with no
             # way to stop it (audit); nobody on the live copy had written one.
             raise Refused("it's a deal: nothing more goes through Bridge. `check` shows the deal for "
                           f"{DEAL_SHOWN_S // 86400} days after it; give your person what it shows, so they can use "
@@ -1880,7 +1843,7 @@ def reply(store: Store, person_id: str, to: str, text: str, *, agree_too: bool =
                              conv["id"], UNANSWERED)
             if len(last) == UNANSWERED and all(m["sender_id"] == person_id for m in last):
                 # More work on one side bought more of the other's attention: a fourth, fifth, twentieth message
-                # each nudged them, and kept a conversation they had stopped answering alive (design review).
+                # each demanded more attention, and kept a conversation they had stopped answering alive (review).
                 raise Refused(f"your person's side has written the last {UNANSWERED} messages here with no answer; "
                               "nothing more goes through until someone else answers. Nothing was sent. Keep what "
                               "you would add for when they do, or `pass` if it has gone quiet.")
@@ -1907,14 +1870,13 @@ def reply(store: Store, person_id: str, to: str, text: str, *, agree_too: bool =
                               one_more=_holds_yes(mine, signature) or bool(waiting and waiting["one_more"]))
                        if agree_too else CLEARED if held else None)
     if outcome != MET:          # held back, nothing reached them
-        _nudge(store, *(p["person_id"] for p in others))
+        _wake(store, *(p["person_id"] for p in others))
     return conv["id"], outcome
 
 
 DEAL, YES, ALREADY, WAITS = "deal", "yes", "already", "waits"
 WITHDRAWN, NO_YES, UNSHOWN = "withdrawn", "no yes", "unshown"
-# A deal made before this call: answered as a deal, and nudges nobody. A repeated `agree` on a deal nudged the
-# other side every ten minutes for as long as the conversation was kept (review).
+# A deal made before this call is answered as a deal. A repeated `agree` changes nothing (review).
 _DEALT = "dealt"
 
 
@@ -2156,7 +2118,7 @@ def _pagePerson(store: Store, link: str) -> str:
 
 def confirmYes(store: Store, link: str, yes_id: str) -> str:
     """Its person's own press on their yes page: what makes a yes count. YES when it waits on the others, DEAL when
-    it completes everyone's (the others are nudged), ALREADY when it counted before; otherwise what the yes is now
+    it completes everyone's (the others are woken), ALREADY when it counted before; otherwise what the yes is now
     (Y_…), or NO_PLACE when the person's own need has no place left for it, and nothing changes."""
     with store.transaction():
         person_id = _pagePerson(store, link)
@@ -2183,7 +2145,7 @@ def confirmYes(store: Store, link: str, yes_id: str) -> str:
         if not all(_holds_yes(p, signature) for p in inside if p["person_id"] != person_id):
             return YES
         dealt = _makeDeal(store, conv, inside, links, now)
-    _nudge(store, *(pid for pid in dealt if pid != person_id))
+    _wake(store, *(pid for pid in dealt if pid != person_id))
     return DEAL
 
 
@@ -2354,7 +2316,7 @@ def report(store: Store, person_id: str, ref: str) -> str:
                    community if delivered else "", person_id, reported if delivered else "", need_id, conv_id,
                    store.now(), None if delivered else store.now(), seat, key)
     if delivered:
-        _nudge(store, owner)
+        _wake(store, owner)
     return REPORTED
 
 
@@ -2674,8 +2636,6 @@ def stats(store: Store) -> dict:
             "orphans": store.one("SELECT COUNT(*) n FROM people p WHERE deleted_t IS NULL AND EXISTS (SELECT 1 FROM "
                                  "needs WHERE author_id=p.id AND closed_t IS NULL AND expires_t>?) AND NOT EXISTS "
                                  "(SELECT 1 FROM calls WHERE person_id=p.id AND t>?)", now, now - 14 * 86400)["n"],
-            # Nudges and the operator's alerts share ntfy.sh's 250 a day per IP (docs/OPERATIONS.md).
-            "nudges_today": store.one("SELECT COUNT(*) n FROM calls WHERE tool='nudge' AND t>?", now - 86400)["n"],
             "calls": {r["tool"]: r["n"] for r in store.all("SELECT tool, COUNT(*) n FROM calls GROUP BY tool")}}
 
 

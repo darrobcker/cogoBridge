@@ -1,7 +1,6 @@
-# The server's own tick says when /health fails, from the same machine: it cannot say the machine, its tunnel or
-# whatever is in front of it is gone. This asks from outside, as an app's servers do, every quarter of an hour.
-# It does nothing until the repository variable BRIDGE_HEALTH_URL is set (a fork pings nobody). A failed run is
-# reported the way GitHub reports any; BRIDGE_DOWN_ALERT, a secret, can name an ntfy topic to post to as well.
+# Whether Bridge answers, asked from outside, as an app's servers do, every quarter of an hour: the machine, its
+# tunnel or whatever is in front of it can be gone. It does nothing until the repository variable BRIDGE_HEALTH_URL
+# is set (a fork pings nobody). A failed run is reported the way GitHub reports any.
 # GitHub runs schedules late at busy times, and turns them off after 60 days without a commit.
 name: uptime
 on:
@@ -18,7 +17,6 @@ jobs:
       - name: health, sign-in metadata and the MCP door answer from outside
         env:
           HEALTH: ${{ vars.BRIDGE_HEALTH_URL }}
-          ALERT: ${{ secrets.BRIDGE_DOWN_ALERT }}
         run: |
           base="${HEALTH%/health}"
           up() {
@@ -31,5 +29,4 @@ jobs:
             if up; then exit 0; fi
             sleep 40
           done
-          if [ -n "$ALERT" ]; then curl -sS -m 20 -d "Bridge is not answering from outside: $base" "$ALERT" || true; fi
           exit 1

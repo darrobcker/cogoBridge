@@ -1,8 +1,6 @@
-"""Wake-ups: one fixed line to the ntfy.sh topic the server made for a person, and an empty event, signed, to each app
-that subscribed to be woken for them (MCP Events), when something is aimed at them.
+"""An empty event, signed, to each app that subscribed to be woken for a person (MCP Events).
 
-Never waited on: a wake-up that fails is a wake-up not sent, and nothing else changes. A failure is printed to the
-server's log, without the topic or the address.
+Never waited on: an event that fails is not sent, and nothing else changes. A failure is printed without its address.
 """
 from __future__ import annotations
 
@@ -18,27 +16,12 @@ import ssl
 import sys
 import threading
 import time
-import urllib.request
 from collections.abc import Callable
 from datetime import UTC, datetime
 from urllib.parse import urlparse
 
-LINE = b"Something is waiting for you on Bridge. Open your AI and say: check Bridge."
 TIMEOUT_S = 10
 TRIES = 3                           # an event, with a wait of 2 and then 8 seconds between tries
-
-
-def _post(link: str) -> None:
-    request = urllib.request.Request(link, data=LINE, method="POST",
-                                     headers={"Title": "Bridge", "Content-Type": "text/plain"})
-    try:
-        urllib.request.urlopen(request, timeout=5).close()
-    except Exception as exc:        # whatever went wrong, nothing waits on it
-        print(f"Bridge: a nudge was not sent: {exc!r}", file=sys.stderr)
-
-
-def send(link: str) -> None:
-    threading.Thread(target=_post, args=(link,), daemon=True).start()
 
 
 # -- MCP Events -------------------------------------------------------------------------------------------------

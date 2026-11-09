@@ -192,7 +192,7 @@ def test_two_friends_make_a_deal_entirely_in_chat(live):
     first = call(ola, "check")
     assert "SETUP: no name, no contact, no about" in first and "another app" in first and "Bridge code" in first
     said = call(ola, "setup", name="Ola Mensah", contact="ola@example.com", about="baking; yes to climbing")
-    assert HEAR in said and "scheduled task" in said and "Check Bridge" in said and "notify" in said
+    assert HEAR in said and "scheduled task" in said and "Check Bridge" in said
     assert "Watch Bridge" not in said                                  # ChatGPT's own, to ChatGPT alone
     assert "Your person's standing rules for you" in call(ola, "check") and "yes to climbing" in call(ola, "check")
     call(rae, "setup", name="Rae Iwuchukwu", contact="+44 7700 900123", about="climbing, rust")
@@ -488,7 +488,7 @@ def test_tool_titles_speak_as_the_person_and_the_hints_say_what_a_tool_can_undo_
     #57); deleting everything was marked not destructive, so no host asked before it (audit #20). OpenAI's plugin
     scan read three more as hard to undo (setup replaces the notes and can end connections, pass ends a
     conversation, community removes people and replaces links) and four as reaching beyond this server (go and
-    reply reach other people's assistants, community other people's communities, setup an ntfy topic); agree
+    reply reach other people's assistants, community other people's communities); agree
     hands a contact over, so it reaches out too. The scan of 1.1.0 (2026-11-04) read reply and agree as hard to undo
     as well: a message sent cannot be taken back, and a yes can end in a contact handed over."""
     tools = {t.name: t.annotations for t in asyncio.run(create_mcp(store, base_url=SITE).list_tools())}
@@ -636,8 +636,6 @@ def test_what_only_one_app_does_is_said_only_to_that_app(live):
     assert "Settings → Apps → Bridge → Refresh" in stale["chatgpt"]
     assert "Claude, start a new chat" in stale["claude"] and "ChatGPT" not in stale["claude"]
     assert "ChatGPT" not in stale["other"] and "Claude" not in stale["other"]
-    assert "chatgpt.com" in call(chatgpt, "setup", notify="on")
-    assert "chatgpt.com" not in call(claude, "setup", notify="on")
     # Named at the handshake, by an app whose sign-in returns somewhere else.
     named = call(live(), "go", text="a lift to the coast", client_info=Implementation(name="openai-mcp", version="1"))
     assert mcp_server.WATCH_EVENTS in named
@@ -650,7 +648,7 @@ def test_no_answer_tells_an_assistant_to_act_unasked(live):
     person, or to keep tool names and ids from them (directory review)."""
     ola, rae, conversation = _pair(live)
     answers = [call(ola, "check"), call(rae, "check"), _yes(ola, conversation), _yes(rae, conversation)]
-    answers += [press(answers[2]), press(answers[3]), call(ola, "check"), call(ola, "setup", notify="on")]
+    answers += [press(answers[2]), press(answers[3]), call(ola, "check"), call(ola, "setup", about="still here")]
     fresh = live()
     answers += [call(fresh, "check"), call(fresh, "setup", about="nothing yet"), call(fresh, "go", text="tennis")]
     for answer in answers:
@@ -1339,13 +1337,23 @@ def test_a_member_reports_and_the_owner_acts_from_chat(live):
     assert "which class? street?" in seen and "Rex" not in seen and "Ola" not in seen
     assert "Removed" in community(owner, "remove", ref=report)
     assert "REPORTED" not in call(owner, "check")
-    on = call(ola, "setup", notify="on")
-    assert "Nudges: on" in on and re.search(r"https://ntfy\.sh/[\w-]{22}", on) and "chatgpt.com" not in on
-    # The topic was shown once, so an assistant told to compare it with the app's had nothing to compare (review 3).
-    name = re.search(r"https://ntfy\.sh/([\w-]{22})", on).group(1)
-    again = call(ola, "setup", notify="on")
-    assert "test" in again and name in again
-    assert "out of date" in call(ola, "setup", notify="https://ntfy.sh/ola")
+
+
+def test_an_old_setup_call_ignores_notify_and_saves_every_other_field(store):
+    """Apps cache tool schemas: a setup call from before the field was removed must still save its other fields."""
+    saved = {}
+    server = mcp_server._Server("old-client")
+
+    @server.tool()
+    def setup(name: str = "", about: str = "") -> str:
+        saved.update(name=name, about=about)
+        return "saved"
+
+    result = asyncio.run(server.call_tool("setup", {"name": "Ola Mensah", "about": "likes baking",
+                                                     "notify": "on"}))
+    assert not result.is_error and saved == {"name": "Ola Mensah", "about": "likes baking"}
+    listed = {t.name: t for t in asyncio.run(create_mcp(store, base_url=SITE).list_tools())}["setup"]
+    assert "notify" not in listed.input_schema["properties"]
 
 
 def test_a_fresh_servers_first_community_has_a_person_for_its_owner(tmp_path, monkeypatch, capsys):

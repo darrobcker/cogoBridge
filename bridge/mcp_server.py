@@ -87,37 +87,12 @@ def hostNamed(name: str) -> str:
 def _hearBack(host: str) -> str:
     """How a person can hear that something is waiting without asking, for their assistant to offer once."""
     ways = ['ask you, whenever they like, what is waiting on Bridge',
-            '`setup` with notify "on": a topic to follow in the ntfy app on their phone, which only ever says that '
-            'something is waiting',
             f'a scheduled task they set up themselves, where their app has them: "{WATCH_LINE}"']
     if host == "chatgpt":
         ways.append(f'say "{WATCH_EVENTS}", and ChatGPT subscribes this chat to be woken when something is waiting')
     return ("Replies take hours or days. If your person wants to hear when something is waiting, they can: "
             + "; ".join(f"({i}) {way}" for i, way in enumerate(ways, 1))
             + ". Set up only what they choose, and, with their OK, save it in `about`.")
-
-
-_NUDGES = {
-    # A person following "subscribe to this link" on a phone gets stuck: the app asks for a topic, and an https
-    # link does not open it (review, docs.ntfy.sh/subscribe/phone).
-    net.NEW: ("Nudges on. Your person installs the ntfy app (from ntfy.sh, or their phone's app store), presses + "
-              "and enters the topic {name} (server ntfy.sh, the default); on Android, ntfy://ntfy.sh/{name} opens "
-              "it directly, and in a browser, {topic}. The topic is theirs alone: whoever has it sees when "
-              "something is waiting. A nudge only ever says that something is waiting, never what or who, though "
-              'whoever sees their phone can tie its moment to what they sent. `setup` with notify "on" again sends '
-              "a test, once a day."),
-    # The topic again: shown only once, it left nothing to compare the app's with (review 3).
-    net.TESTED: "A test nudge is on its way to their ntfy topic, {name}.",
-    net.TOO_SOON: "A nudge went to their ntfy topic in the last day, and a test goes at most once a day; try it "
-                  "again tomorrow. If they did not see the last one, compare the topic in the app with {name}, "
-                  'character by character; if it still fails, notify "off" then "on" gives a fresh one.',
-    net.OFF: 'Nudges off, and the topic is gone: notify "on" later makes a new one.'}
-# Only ChatGPT's own: opening what's waiting there needs its web app.
-_CHATGPT_NUDGE = " In ChatGPT, opening what's waiting needs chatgpt.com on a computer."
-
-
-def _nudges(text: str, topic: str) -> str:
-    return text.format(topic=topic, name=topic.rsplit("/", 1)[-1])
 
 
 _HAND_OVER = ("— you cannot deliver it: give it to your person to send, one person or group chat at a time, to "
@@ -138,7 +113,7 @@ def _maybe_second(inbox: dict) -> bool:
     """`net.holds_nothing`, from what `check` already has: an account that holds anything has more to lose than a
     code can bring over."""
     me = inbox["me"]
-    return not (me["name"] or me["contact"] or me["about"] or me["notify"] or inbox["mine"] or inbox["conversations"]
+    return not (me["name"] or me["contact"] or me["about"] or inbox["mine"] or inbox["conversations"]
                 or any(c["owner"] for c in me["communities"]))
 
 
@@ -178,6 +153,8 @@ class _Server(MCPServer):
     host = staticmethod(lambda context: "")         # set by `create_mcp`: which app a call came from
 
     async def call_tool(self, name, arguments, context=None):
+        if name == "setup" and "notify" in arguments:
+            arguments = {key: value for key, value in arguments.items() if key != "notify"}
         if name in {t.name for t in await self.list_tools()}:
             return await super().call_tool(name, arguments, context)
         refresh = stale(self.host(context))
@@ -597,7 +574,7 @@ def create_mcp(store: Store, *, base_url: str, operator: str = "", version: str 
 
     # A host's approval dialog shows the title to the person, so it speaks as them: "Set up your person" left a
     # person working out who that was (audit #57). Destructive: what is hard to undo, so hosts ask first (audit #20;
-    # OpenAI's scan). Open world: what reaches other people's assistants, or ntfy.
+    # OpenAI's scan). Open world: what reaches other people's assistants.
     def tool(title: str, name: str | None = None, read_only: bool = False, destructive: bool = False,
              open_world: bool = False):
         return mcp.tool(name=name, annotations=ToolAnnotations(title=title, readOnlyHint=read_only,
@@ -619,7 +596,7 @@ def create_mcp(store: Store, *, base_url: str, operator: str = "", version: str 
 
     @tool("Set up my Bridge", destructive=True, open_world=True)
     @_refusals
-    def setup(name: str = "", contact: str = "", about: str = "", notify: str = "", another_app: bool = False,
+    def setup(name: str = "", contact: str = "", about: str = "", another_app: bool = False,
               new_link: bool = False, code: str = "", ctx: Context = None) -> str:
         """Sets, as the person asks, any of: `name` and `contact` (an email or a phone number; a nickname or a spare
         number is fine), which go only to the others in a deal, once the person has confirmed their yes on their yes
@@ -628,8 +605,6 @@ def create_mcp(store: Store, *, base_url: str, operator: str = "", version: str 
         saw: never a profile of them drawn from the chat. `check` reads it back to them and to no other member, though
         the server stores it, locked: rules are best written without naming what they protect. `about` replaces the
         rules whole, up to 2000 characters; longer is refused. An empty field keeps its value.
-        `notify`: "on" gives an ntfy topic for a phone nudge when something is waiting (again, a test nudge);
-        "off" clears it.
         `another_app=true`: returns a one-use code that makes a connection in another app this same person.
         `new_link=true`: returns such a code; when it is used, every other connection of the person ends and their
         yes page gets a new link, for when someone else may have had access.
@@ -645,7 +620,7 @@ def create_mcp(store: Store, *, base_url: str, operator: str = "", version: str 
                                  "theirs has ended, the one that gave the code included, and any old connector link "
                                  "of their own: tell them to remove that one from its app. Their yes page has a new "
                                  "link, which `check` shows. `check` shows everything they have."}[outcome]
-            if not (name or contact or about or notify or another_app or new_link):
+            if not (name or contact or about or another_app or new_link):
                 return linked
             linked += "\n"
         first = not net.me(store, pid)["about"]
@@ -653,18 +628,15 @@ def create_mcp(store: Store, *, base_url: str, operator: str = "", version: str 
         # have asked; worded for an assistant that already asked at `check` (review).
         second = not code and net.holds_nothing(store, pid)
         # Anything sent with new_link is saved first: it was silently dropped (review).
-        done = net.setup(store, pid, name=name or None, contact=contact or None, about=about or None,
-                         notify=notify or None)
-        nudges = _NUDGES.get(done, "") + (_CHATGPT_NUDGE if done == net.NEW and host(ctx) == "chatgpt" else "")
+        net.setup(store, pid, name=name or None, contact=contact or None, about=about or None)
         me = net.me(store, pid)
-        after = f"\n{_nudges(nudges, me['notify'])}" if nudges else ""
         if new_link:
             fresh = net.link_code(store, pid, replace=True)
             return (f"{linked}New-link code: {fresh}. Give it to your person, in this chat only. Using it ends every "
                     "other connection of theirs, this one included, so that nobody else who had access keeps it, and "
                     "gives their yes page a new link. In the app they want to keep using, remove Bridge (and any old "
                     f"Bridge connector link), then {_code_steps(fresh)} Until then this connection keeps "
-                    f"working.{after}")
+                    "working.")
         if another_app:
             fresh = net.link_code(store, pid, replace=False)
             # The code after "#", so no server or log on the way sees it; and opening the link uses nothing up,
@@ -672,13 +644,12 @@ def create_mcp(store: Store, *, base_url: str, operator: str = "", version: str 
             web = (f" Or, for Bridge on the web: {base_url}/view/#code={fresh} — opening it does nothing until "
                    "they press Continue there." if site else "")
             return (f"{linked}Code for another app: {fresh}. Give it to your person, in this chat only: "
-                    f"{_code_steps(fresh)} This app keeps working as well.{web}{after}")
+                    f"{_code_steps(fresh)} This app keeps working as well.{web}")
         # Only the first time: repeated on every later setup, it asked again what the notes already said (diary).
         return (f"{linked}Saved. Name: {said(me['name'], label=False) if me['name'] else '(none)'}. "
                 f"Contact: {said(me['contact'], label=False) if me['contact'] else '(none)'}. "
-                f"About: {'set' if me['about'] else '(none)'}. "
-                f"Nudges: {'on' if net.nudges_on(me['notify']) else 'off'}."
-                + after + (f"\nIf you have not yet, {_SECOND}" if second else "")
+                f"About: {'set' if me['about'] else '(none)'}."
+                + (f"\nIf you have not yet, {_SECOND}" if second else "")
                 + (f"\nOnce your person's first need is out: {_hearBack(host(ctx))}" if first else ""))
 
     @tool("Post what I'm looking for", open_world=True)
@@ -863,7 +834,7 @@ def create_mcp(store: Store, *, base_url: str, operator: str = "", version: str 
     @tool("Delete my Bridge data", destructive=True)
     @_refusals
     def forget_me(confirm: str, ctx: Context = None) -> str:
-        """Deletes the person from Bridge, when they ask: their name, contact, notes, phone nudges, needs, yeses and
+        """Deletes the person from Bridge, when they ask: their name, contact, notes, needs, yeses and
         yes page, and every conversation they were in, emptied on both sides. It cannot be undone, and a name or
         contact a deal already handed over cannot be recalled. Backups keep it at most 15 days more. Needs
         confirm="delete everything"."""

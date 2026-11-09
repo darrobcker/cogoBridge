@@ -111,6 +111,12 @@ The current design, with two things since removed:
   The links already handed out still work, and move to sign-in with a code. Trigger: none — a host that could not
   sign in would get a link from the operator.
 
+## ntfy (removed 2026-11-08)
+
+Member phone nudges went, with every ntfy.sh topic stored for one, and so did the operator's ntfy alerts: a failed
+backup is a line in tick.log and a failed run, and the outside checks fail their runs, which GitHub reports.
+Subscribed apps still receive the empty `waiting` event. Nobody was using either.
+
 ## 5. The name
 
 It began as demand, became peoplerouter (2026-09-21), then opporouter (2026-09-25, since DINQ already ships an MCP
@@ -135,4 +141,3 @@ on the person's request and that a name and contact never leave on the model's w
 waiting and the person confirms it on their yes page (PROTOCOL.md §3 rule 5), and the lines a person can set up to
 hear back say "Don't reply or agree without me". Yeses recorded before the change, on no deal yet, were cleared by
 the move to schema 10, and are asked for again.
-

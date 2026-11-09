@@ -198,7 +198,7 @@ def test_tick_trims_big_logs_in_place_and_backs_up_once_a_day(home):
     assert log.stat().st_ino == inode and 900_000 < len(kept) <= 1 << 20
     assert kept.endswith(lines[-1]) and kept.startswith("line ")
     assert small.read_text() == "a short log\n"
-    assert len(backups(h)) == 1 and not (h / ".bridge" / "tick.json").exists()   # no alerts asked for
+    assert len(backups(h)) == 1 and not (h / ".bridge" / "tick.json").exists()   # no copy asked for
     tick(env)
     assert len(backups(h)) == 1
     yesterday = backups(h)[0].rename(h / "backups" / "bridge-20000101T000000Z.db")
@@ -224,11 +224,9 @@ def test_tick_trims_big_logs_in_place_and_backs_up_once_a_day(home):
 
 
 class Watched(http.server.BaseHTTPRequestHandler):
-    """The public URL and the operator's ntfy topic, both on one local port. Like Cloudflare in front of the
-    public URL, it bans urllib's default User-Agent."""
-    up = False
-    told: list[str] = []
-    kept: dict[str, bytes] = {}         # the off-site container: upload-only, so a name once written stays
+    """The off-site container, on a local port. Like Cloudflare in front of a public URL, it bans urllib's default
+    User-Agent."""
+    kept: dict[str, bytes] = {}         # upload-only, so a name once written stays
     put_fails = False
 
     def banned(self) -> bool:
@@ -238,20 +236,6 @@ class Watched(http.server.BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(b"error code: 1010")
         return True
-
-    def do_GET(self):
-        if self.banned():
-            return
-        self.send_response(200 if Watched.up else 502)
-        self.end_headers()
-        self.wfile.write(json.dumps({"ok": True}).encode() if Watched.up else b"bad gateway")
-
-    def do_POST(self):
-        if self.banned():
-            return
-        Watched.told.append(self.rfile.read(int(self.headers["Content-Length"])).decode())
-        self.send_response(200)
-        self.end_headers()
 
     def do_PUT(self):
         body = self.rfile.read(int(self.headers["Content-Length"]))
@@ -275,59 +259,26 @@ class Watched(http.server.BaseHTTPRequestHandler):
 def watched():
     server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Watched)
     threading.Thread(target=server.serve_forever, daemon=True).start()
-    Watched.up, Watched.told, Watched.kept, Watched.put_fails = False, [], {}, False
+    Watched.kept, Watched.put_fails = {}, False
     yield f"http://127.0.0.1:{server.server_address[1]}"
     server.shutdown()
 
 
-def test_tick_tells_the_operator_after_two_failures_at_most_hourly_and_once_when_it_is_back(home, watched):
-    """Cloudflare answers urllib's default User-Agent with 403 (error 1010), so against the real public URL the
-    check never passed: the operator would have been told it was down every hour while it was up, and never
-    that it was back. The test server did not look at the User-Agent, so this passed."""
+def test_a_failed_backup_says_so_in_the_log_and_fails_the_run_every_time(home):
+    """A failed scheduled backup is a line in tick.log and a failed run, every ten minutes until it works."""
     h, env = home
-    base = watched                                          # the public URL; its ntfy topic is on it too
-    env = {**env, "BRIDGE_BASE_URL": base, "BRIDGE_OPERATOR_NOTIFY": f"{base}/topic"}
-    state = h / ".bridge" / "tick.json"
-    tick(env)
-    assert Watched.told == []                              # once can be the tunnel reconnecting
-    tick(env)
-    assert len(Watched.told) == 1 and "down" in Watched.told[0] and base in Watched.told[0]
-    tick(env)
-    assert len(Watched.told) == 1
-    saved = json.loads(state.read_text())
-    state.write_text(json.dumps({**saved, "alerted_t": saved["alerted_t"] - 3600}))
-    tick(env)
-    assert len(Watched.told) == 2 and "down" in Watched.told[1]
-    Watched.up = True
-    tick(env)
-    tick(env)
-    assert len(Watched.told) == 3 and "back up" in Watched.told[2]
-    Watched.up = False
-    tick(env)
-    assert len(Watched.told) == 3
-
-
-def test_tick_tells_the_operator_when_the_backup_fails_and_calls_nothing_down_without_a_url_to_check(
-        home, watched):
-    """A failed scheduled backup was only a traceback in tick.log, repeated every ten minutes, which nobody
-    reads. And with a notify URL but no base URL, tick fetched '/health', which cannot succeed, and counted a
-    server that was up as down."""
-    h, env = home
-    env = {**env, "BRIDGE_OPERATOR_NOTIFY": f"{watched}/topic"}
     (h / ".bridge" / "bridge.db").unlink()
     for _ in range(3):
         done = run(env, sys.executable, SCRIPTS / "tick")
         assert done.returncode != 0 and "BACKUP FAILED" in done.stderr
-    assert Watched.told == ["Bridge backup failed: see tick.log"]
-    assert "fails" not in json.loads((h / ".bridge" / "tick.json").read_text())
 
 
-def test_each_new_backup_is_copied_off_the_machine_once_and_a_failed_copy_is_retried_and_told(home, watched):
+def test_each_new_backup_is_copied_off_the_machine_once_and_a_failed_copy_is_retried(home, watched):
     """The backups sat on the server's own disk, so losing the machine lost them too. Each new one goes to a container
-    that takes uploads only; a copy that fails is tried again next time, the operator is told at most hourly, and the
-    address, which carries the signature, is never printed."""
+    that takes uploads only; a copy that fails says so in tick.log and is tried again next time, and the address,
+    which carries the signature, is never printed."""
     h, env = home
-    env = {**env, "BRIDGE_OPERATOR_NOTIFY": f"{watched}/topic", "BRIDGE_BACKUP_COPY": f"{watched}/box?sig=s3cret"}
+    env = {**env, "BRIDGE_BACKUP_COPY": f"{watched}/box?sig=s3cret"}
     tick(env)
     (first,) = backups(h)
     assert Watched.kept == {f"/box/{first.name}": first.read_bytes()}
@@ -340,14 +291,13 @@ def test_each_new_backup_is_copied_off_the_machine_once_and_a_failed_copy_is_ret
     for _ in range(2):
         done = run(env, sys.executable, SCRIPTS / "tick")
         assert done.returncode != 0 and "BACKUP COPY FAILED" in done.stderr and "s3cret" not in done.stderr
-    assert Watched.told == ["Bridge's backup could not be copied off the machine: see tick.log"]
     Watched.put_fails = False
     tick(env)
     assert len(Watched.kept) == 2 and len(backups(h)) == 2
     state = h / ".bridge" / "tick.json"
     state.write_text(json.dumps({k: v for k, v in json.loads(state.read_text()).items() if k != "copied"}))
     tick(env)                                                           # its answer lost: already there is copied
-    assert len(Watched.kept) == 2 and len(Watched.told) == 1
+    assert len(Watched.kept) == 2
 
 
 # -- deploy ---------------------------------------------------------------------------------------------

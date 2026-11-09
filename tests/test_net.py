@@ -123,29 +123,24 @@ def test_a_community_name_carries_no_contact(world, name):
 
 
 def test_a_deal_ends_its_conversation(world, store, clock):
-    """Messages after a deal were carried, so a deal partner could message and nudge someone for months with no
-    way to stop it: the audit's top risk for real people. Nobody on the live copy had written one. A repeated
-    `agree` on the deal nudged the other side again every ten minutes (review)."""
-    sent = []
-    store.on_nudge = sent.append
+    """Messages after a deal were carried, so a deal partner could keep reaching someone for months with no
+    way to stop it: the audit's top risk for real people. Nobody on the live copy had written one."""
     ola, rae = world.pair()
-    net.setup(store, ola, notify="on")
     need = world.go("ola", "a climbing partner")
     conversation = world.reply("rae", need, "keen")
     agree(store, ola, conversation)
     agree(store, rae, conversation)
     clock.advance(11 * 60)
-    before = (len(sent), store.one("SELECT COUNT(*) n FROM messages")["n"], shown(world, "ola"))
+    before = (store.one("SELECT COUNT(*) n FROM messages")["n"], shown(world, "ola"))
     for key, to in (("rae", conversation), ("ola", conversation), ("rae", need)):
         with pytest.raises(net.Refused, match="use their contact"):
             world.reply(key, to, "see you Thursday at 7, I'll wear a red hat")
         with pytest.raises(net.Refused, match="use their contact"):
             net.reply(store, world.p[key], to, "and bring chalk", agree_too=True)
-    assert (len(sent), store.one("SELECT COUNT(*) n FROM messages")["n"], shown(world, "ola")) == before
+    assert (store.one("SELECT COUNT(*) n FROM messages")["n"], shown(world, "ola")) == before
     for key in ("rae", "ola"):
         clock.advance(11 * 60)
         assert agree(store, world.p[key], conversation) == net.DEAL
-    assert len(sent) == before[0]
     # Someone at the daily cap was told to wait until tomorrow, and only then learned to use the contact.
     for _ in range(net.MESSAGES_PER_DAY):
         store.exec("INSERT INTO messages(conversation_id, sender_id, text, t) VALUES (?,?,?,?)",
@@ -1153,22 +1148,20 @@ def test_the_other_side_sees_nothing_of_a_deal_that_fills_the_need(world, store)
 # to all of the swapped person's things at once (their leaving, deleting themselves, being removed).
 
 def _world():
-    """A fresh store on a fixed clock, and a way to add someone set up and nudged, in given communities."""
+    """A fresh store on a fixed clock, and a way to add someone set up in given communities."""
     store, t = net.open_store(), [1_790_000_000.0]
     store.set_clock(lambda: t[0])
     sent: list[str] = []
-    store.on_nudge = sent.append
 
     def person(name: str, *communities: str) -> str:
         pid = net.new_person(store)
         net.setup(store, pid, name=name, contact=f"{name.split()[0].lower()}@example.com", about="notes")
         for c in communities:
             net.join(store, pid, c)
-        store.exec("UPDATE people SET notify=? WHERE id=?", f"https://ntfy.sh/{name.split()[0]}", pid)
         return pid
 
     def later() -> None:
-        t[0] += 11 * 60                     # past the nudge limit, so every step's nudges are seen
+        t[0] += 11 * 60
     return store, person, later, sent
 
 
@@ -1201,7 +1194,6 @@ def _swap(b_wrote_it: bool) -> list:
         for who, pid in (("A", a), ("O", o)):
             views.append((step, who, _normalised(mcp_server.render_check(net.inbox(store, pid), store.now()), labels)))
         views.append((step, "answer", _normalised(answer, labels)))
-        views.append((step, "nudged", sorted(s for s in sent if s.endswith(("/Ann", "/Olga")))))
         sent.clear()
 
     na = net.go(store, a, "a climbing partner")
@@ -1233,7 +1225,7 @@ def test_nothing_depends_on_who_wrote_an_unnamed_need():
     same whoever wrote the need about debt. They did not: one live conversation per pair hid it from the reader
     while Bob talked to them, refused their reply to it with a pointer to that conversation, and showed it again
     at the deal; the facts line added up Bob's other conversations (rethink, r3_swap.py and r4_revised.py). With
-    two shared communities, nudges recorded, and a third party removed by a report."""
+    two shared communities and a third party removed by a report."""
     bob, dee = _swap(True), _swap(False)
     assert bob == dee
 
@@ -1473,12 +1465,9 @@ def test_writing_again_unanswered_does_not_keep_a_conversation_open(world, store
 
 
 def test_one_side_sends_three_in_a_row_and_then_waits(world, store, clock):
-    """More writing on one side bought more of the other's attention: every message nudged them (design review).
+    """More writing on one side bought more of the other's attention (design review).
     The limit is the conversation's own, so it says nothing about the other side's other conversations."""
-    sent = []
-    store.on_nudge = sent.append
-    ola, rae = world.pair()
-    net.setup(store, ola, notify="on")
+    world.pair()
     conversation = world.reply("rae", world.go("ola", "a climbing partner"), "keen")
     for text in ("two", "three"):
         clock.advance(11 * 60)
@@ -1486,7 +1475,7 @@ def test_one_side_sends_three_in_a_row_and_then_waits(world, store, clock):
     clock.advance(11 * 60)
     with pytest.raises(net.Refused, match="last 3 messages here with no answer") as refused:
         world.reply("rae", conversation, "four")
-    assert "Nothing was sent" in str(refused.value) and seen(store, conversation) == 3 and len(sent) == 3
+    assert "Nothing was sent" in str(refused.value) and seen(store, conversation) == 3
     world.reply("ola", conversation, "hi")
     assert world.reply("rae", conversation, "four") == conversation
 
@@ -2426,10 +2415,12 @@ def test_a_database_from_before_passkeys_gains_their_tables(tmp_path):
     net.open_store(path).db.close()
     import sqlite3
     db = sqlite3.connect(path)
-    db.executescript("DROP TABLE passkeys; DROP TABLE recovery_codes; PRAGMA user_version=10;")
+    db.executescript("DROP TABLE passkeys; DROP TABLE recovery_codes; "
+                     "ALTER TABLE people RENAME COLUMN woken_t TO nudged_t; "
+                     "ALTER TABLE people ADD COLUMN notify TEXT NOT NULL DEFAULT ''; PRAGMA user_version=10;")
     db.close()
     store = net.open_store(path)
-    assert store.db.execute("PRAGMA user_version").fetchone()[0] == store_module.SCHEMA_VERSION == 11
+    assert store.db.execute("PRAGMA user_version").fetchone()[0] == store_module.SCHEMA_VERSION
     assert net.ways_in(store, "p-nobody") == {"passkeys": [], "recovery": False, "browsers": 0}
 
 
@@ -2510,45 +2501,33 @@ def test_a_counting_passkey_used_twice_at_once_signs_in_once(world, store):
 SECRET = "whsec_" + "A" * 32                                  # 24 bytes of key
 
 
-def woken(store) -> tuple[list, list]:
-    topics, apps = [], []
-    store.on_nudge, store.on_wake = topics.append, apps.append
-    return topics, apps
+def woken(store) -> list:
+    apps = []
+    store.on_wake = apps.append
+    return apps
 
 
-def test_an_app_that_asked_is_woken_with_the_nudge_and_under_its_limit(world, store, clock):
+def test_an_app_that_asked_is_woken_under_its_limit(world, store, clock):
     """ChatGPT subscribes to `waiting` and acts in that chat when it arrives, even while its person is away
-    (HOSTS.md): the wake-up the diary studies found missing. It goes when a nudge would, and one limit covers every
-    wake-up of a person together, so a second app is not a second stream of timings."""
-    topics, apps = woken(store)
+    (HOSTS.md): the wake-up the diary studies found missing. One limit covers every app for a person, so a second
+    app is not a second stream of timings."""
+    apps = woken(store)
     ola, rae = world.pair()
     grant = connection(store)
     store.exec("UPDATE grants SET person_id=? WHERE id=?", ola, grant)
-    net.setup(store, ola, notify="on")
     net.subscribe(store, ola, grant, "https://chatgpt.test/hook", SECRET, 7)
     need = world.go("ola", "a climbing partner")
     conversation = world.reply("rae", need, "keen")
-    assert len(topics) == 1 and [a["url"] for a in apps] == ["https://chatgpt.test/hook"]
+    assert [a["url"] for a in apps] == ["https://chatgpt.test/hook"]
     world.reply("rae", conversation, "Tuesdays?")                       # within ten minutes: nothing
-    assert len(topics) == 1 and len(apps) == 1
-    clock.advance(net.NUDGE_EVERY_S + 1)
+    assert len(apps) == 1
+    clock.advance(net.WAKE_EVERY_S + 1)
     agree(store, rae, conversation)                                     # never for a yes
     assert len(apps) == 1
-    net.setup(store, ola, notify="off")
-    clock.advance(net.NUDGE_EVERY_S + 1)
-    world.reply("rae", conversation, "or Thursdays")                    # the app alone still counts
-    assert len(apps) == 2 and len(topics) == 1
+    clock.advance(net.WAKE_EVERY_S + 1)
+    world.reply("rae", conversation, "or Thursdays")
+    assert len(apps) == 2
     assert net.stats(store)["calls"]["wake"] == 2
-
-
-def test_the_test_line_goes_to_the_phone_alone(world, store):
-    topics, apps = woken(store)
-    ola, _ = world.pair()
-    grant = connection(store)
-    store.exec("UPDATE grants SET person_id=? WHERE id=?", ola, grant)
-    net.subscribe(store, ola, grant, "https://chatgpt.test/hook", SECRET, 7)
-    net.setup(store, ola, notify="on")
-    assert net.setup(store, ola, notify="on") == net.TESTED and len(topics) == 1 and not apps
 
 
 def test_a_subscription_is_its_connections_and_ends_with_it(store, clock):
@@ -2575,7 +2554,7 @@ def test_a_subscription_is_its_connections_and_ends_with_it(store, clock):
 
 
 def test_an_app_that_says_its_address_is_gone_is_sent_nothing_more(world, store):
-    topics, apps = woken(store)
+    apps = woken(store)
     ola, _ = world.pair()
     grant = connection(store)
     store.exec("UPDATE grants SET person_id=? WHERE id=?", ola, grant)
@@ -2701,10 +2680,9 @@ def _writers() -> set[str]:
 
 def _writer_calls(w) -> dict:
     """For each writer, whose deletion must stop it (None for the server's own), and a call that makes it write.
-    `_nudge`'s person is the one it would go to; the rest are in their person's name."""
+    `_wake`'s person is the one it would go to; the rest are in their person's name."""
     s, owner, community = w.store, w.owner, w.community
     ola, rae = w.pair()
-    net.setup(s, ola, notify="on")
     secret = own_link(s, ola)
     need, other = w.go("ola", "a climbing partner"), w.go("ola", "a sourdough starter")
     w.add("sam", "Sam Lee", "sam@example.com")
@@ -2719,7 +2697,7 @@ def _writer_calls(w) -> dict:
     net.report(s, rae, conversation)
     report = s.one("SELECT id FROM reports")["id"]
     elsewhere, _ = net.create_community(s, ola, "Ola's lot")
-    s._clock.advance(86400)                                         # past every nudge limit
+    s._clock.advance(86400)
     # Sign-in, after the day has passed: its steps last minutes.
     fresh = net.new_person(s)                                        # in no community yet
     net.register_client(s, "app", "{}")
@@ -2748,11 +2726,12 @@ def _writer_calls(w) -> dict:
     lost_link = own_link(s, lost)
     s.exec("UPDATE connectors SET person_key='' WHERE person_id=?", lost)
     vault._SHARED.pop(lost)
+    net.subscribe(s, ola, grant, "https://wake.test/hook", SECRET, 7)
     return {
         "new_person": (None, lambda: net.new_person(s)),
         "sweep": (None, lambda: net.sweep(s)),
         "log_call": (None, lambda: net.log_call(s, "join-page claude")),
-        "_nudge": (ola, lambda: net._nudge(s, ola)),
+        "_wake": (ola, lambda: net._wake(s, ola)),
         "setup": (ola, lambda: net.setup(s, ola, name="Ola M")),
         "person_for_connector": (ola, lambda: net.person_for_connector(s, secret, "check")),
         "forget_me": (ola, lambda: net.forget_me(s, ola, "delete everything")),
@@ -2809,7 +2788,6 @@ def _writer_calls(w) -> dict:
 def _fresh_writer_calls() -> tuple:
     store = net.open_store()
     store.set_clock(Clock())
-    store.on_nudge = lambda topic: None
     return store, _writer_calls(World(store))
 
 
@@ -2867,7 +2845,7 @@ def test_every_writer_writes_in_a_transaction_and_nothing_once_its_person_is_del
         store.transaction = deleted_first
         try:
             call()
-            if writer != "_nudge":
+            if writer != "_wake":
                 failures.append(f"{writer} did not fail for a deleted person")
         except net.NotYours:
             pass
@@ -2881,74 +2859,7 @@ def test_every_writer_writes_in_a_transaction_and_nothing_once_its_person_is_del
     assert not failures, "\n".join(failures)
 
 
-# -- nudges and reports ----------------------------------------------------------------------------------
-
-def test_a_nudge_goes_only_to_whoever_asked_for_one_and_says_nothing(world, store, clock):
-    """Every diarist came back by luck — a rota clash, a bandmate asking — and two deals nearly expired unseen
-    (diary study). A person may ask for a nudge; it is told only that something is waiting."""
-    sent = []
-    store.on_nudge = sent.append
-    ola, rae = world.pair()
-    assert net.setup(store, ola, notify="on") == net.NEW
-    ola_topic = net.me(store, ola)["notify"]
-    need = world.go("ola", "a climbing partner")
-    conversation = world.reply("rae", need, "keen")
-    assert sent == [ola_topic]
-    world.reply("rae", conversation, "Tuesdays?")                   # coalesced: at most one every ten minutes
-    assert len(sent) == 1
-    clock.advance(11 * 60)
-    agree(store, rae, conversation)                             # a yes alone is never told, so never nudged
-    assert len(sent) == 1
-    net.setup(store, rae, notify="on")
-    agree(store, ola, conversation)                             # a deal is
-    assert sent[1:] == [net.me(store, rae)["notify"]]
-    clock.advance(11 * 60)
-    lift = world.reply("rae", world.go("ola", "a lift to the wall"), "I drive past it")
-    assert len(sent) == 3 and net.stats(store)["nudges_today"] == 3
-    net.setup(store, ola, notify="off")
-    clock.advance(11 * 60)
-    world.reply("rae", lift, "Tuesdays?")
-    assert len(sent) == 3
-
-
-def test_nudges_go_only_to_an_ntfy_topic_the_server_makes(world, store, clock):
-    """A person could give any https link, so the server connected to addresses members chose, behind DNS and
-    private-address checks with gaps (#25, #26, #36, #43). Now `on` makes an unguessable ntfy.sh topic, `on` again
-    sends a test, and `off` then `on` replaces a topic that leaked. A test every ten minutes let two accounts use up
-    ntfy.sh's daily allowance for the server, which the operator's alerts share: one a day now (review)."""
-    sent = []
-    store.on_nudge = sent.append
-    ola, _ = world.pair()
-    assert net.setup(store, ola, notify="on") == net.NEW
-    topic = net.me(store, ola)["notify"]
-    # Typed by hand into the phone app from a computer's screen: mixed case with I, l, 1, O and 0 in it (review).
-    assert re.fullmatch(rf"https://ntfy\.sh/[{net._ALPHABET}]{{26}}", topic) and sent == []
-    assert net.setup(store, ola, notify=" On ") == net.TESTED and sent == [topic]
-    assert net.setup(store, ola, notify="on") == net.TOO_SOON and sent == [topic]
-    clock.advance(11 * 60)                                             # a test is once a day, not every nudge
-    assert net.setup(store, ola, notify="on") == net.TOO_SOON and sent == [topic]
-    clock.advance(86400)
-    assert net.setup(store, ola, notify="on") == net.TESTED and len(sent) == 2
-    assert net.setup(store, ola, notify="off") == net.OFF and net.me(store, ola)["notify"] == ""
-    assert net.setup(store, ola, notify="on") == net.NEW and net.me(store, ola)["notify"] not in ("", topic)
-    assert net.setup(store, ola, notify="none") == net.OFF                # what "off" was called before
-    about = net.me(store, ola)["about"]
-    for link in ("https://ntfy.sh/my-own-topic", "https://example.com/hook", "yes"):
-        # The whole call is refused, and said only that nudges were: an assistant told its person their notes
-        # were saved (review).
-        with pytest.raises(net.Refused, match="out of date") as refused:
-            net.setup(store, ola, about="likes baking", notify=link)
-        assert "Nothing was saved" in str(refused.value) and net.me(store, ola)["about"] == about
-    store.exec("UPDATE people SET notify='https://example.com/hook', nudged_t=NULL WHERE id=?", ola)
-    world.reply("rae", world.go("ola", "a chess partner"), "keen")     # an address from before: never posted to
-    assert len(sent) == 2
-    # A topic from before with a query had ntfy.sh forward the line to an email address or a phone (review 3).
-    store.exec("UPDATE people SET notify='https://ntfy.sh/t?email=someone@example.com' WHERE id=?", ola)
-    world.reply("rae", world.go("ola", "a bridge partner"), "keen")
-    assert len(sent) == 2 and net.setup(store, ola, notify="on") == net.NEW
-    store.exec("UPDATE people SET nudged_t=? WHERE id=?", store.now(), ola)
-    net.forget_me(store, ola, "delete everything")                     # and deleting clears it (#18)
-    assert tuple(store.one("SELECT notify, nudged_t FROM people WHERE id=?", ola)) == ("", None)
+# -- reports ----------------------------------------------------------------------------------------------------
 
 
 def test_a_member_can_report_to_the_owner_who_sees_what_was_written_and_never_who(world, store):
@@ -2988,26 +2899,19 @@ def test_a_report_can_be_dismissed(world, store):
 
 def test_a_report_about_the_owner_or_to_an_owner_who_left_goes_nowhere_and_reads_the_same(world, store, clock):
     """A report about the owner was stored and shown to that owner, who then knew who had reported them: the
-    only other side of that conversation (#16). And one to an owner who had left waited for nobody. A nudge for
-    a report that goes nowhere would ring the owner's phone at the moment of reporting, and no test held either
-    that or the nudge for one that arrives (review)."""
-    sent = []
-    store.on_nudge = sent.append
+    only other side of that conversation (#16). And one to an owner who had left waited for nobody."""
     owner, mine, ola, rex = _parents(world, store)
-    net.setup(store, owner, notify="on")
     about_owner = net.reply(store, owner, net.go(store, ola, "a babysitting swap", mine), "hello")[0]
     about_rex = net.reply(store, rex, net.go(store, ola, "a lift to school", mine), "hello")[0]
     answers = [net.report(store, ola, c) for c in (about_owner, about_owner)]
-    assert sent == []
     answers += [net.report(store, ola, c) for c in (about_rex, about_rex)]
     assert answers == [net.REPORTED] * 4                               # the same, and the same again
     assert [r["wrote"] for r in net.inbox(store, owner)["reports"]] == [["hello"]]
-    assert sent == [net.me(store, owner)["notify"]]
     net.leave(store, owner, mine)
-    clock.advance(net.NUDGE_EVERY_S + 1)
+    clock.advance(net.WAKE_EVERY_S + 1)
     assert net.report(store, rex, net.go(store, ola, "a spare pram", mine)) == net.REPORTED
     net.join(store, owner, mine)
-    assert len(net.inbox(store, owner)["reports"]) == 1 and len(sent) == 1
+    assert len(net.inbox(store, owner)["reports"]) == 1
 
 
 def test_a_report_is_not_for_a_deal_nor_in_a_community_you_own(world, store):
@@ -3046,11 +2950,8 @@ def test_a_report_made_before_a_deal_cannot_aim_a_removal(world, store):
     assert left["kind"] == "need"
     with pytest.raises(net.Refused, match="cannot be acted on"):
         net.remove(store, owner, left["id"], mine)
-    sent = []
-    store.on_nudge = sent.append
-    net.setup(store, owner, notify="on")
     assert net.report(store, ola, net.go(store, rex, "a spare pram", mine)) == net.REPORTED
-    assert net.inbox(store, owner)["reports"] == [left] and sent == []     # nor rings the owner's phone
+    assert net.inbox(store, owner)["reports"] == [left]
 
 
 def test_a_report_closes_when_its_reporter_deals_on_the_need_it_reported(world, store):
@@ -3303,7 +3204,8 @@ def test_a_database_from_another_version_is_refused(tmp_path):
         net.open_store(path)
     fresh = tmp_path / "new.db"
     net.open_store(fresh).db.close()
-    net.open_store(fresh)
+    store = net.open_store(fresh)
+    assert "notify" not in {row["name"] for row in store.all("PRAGMA table_info(people)")}
 
 
 def test_a_live_database_from_before_comes_over_whole_and_locked(tmp_path, keys):
@@ -3343,15 +3245,19 @@ def test_a_live_database_from_before_comes_over_whole_and_locked(tmp_path, keys)
         ("c-wait", "p-sam", "I have a starter going", t)])
     secret = "s" * 32                                     # ola's connector link from before sign-in
     db.execute("INSERT INTO connectors VALUES (?, 'p-ola', ?, NULL)", (net._hash(secret), t))
+    legacy_topic = "legacy-member-topic-secret"
+    db.execute("UPDATE people SET notify=? WHERE id='p-ola'", (legacy_topic,))
     db.commit()
     db.close()
     keys.clear()                                          # nobody's key is in anyone's hand: a migration has none
     s = net.open_store(path)
     s.set_clock(Clock(T0 + 60))
     assert s.one("PRAGMA user_version")[0] == store_module.SCHEMA_VERSION
+    assert "notify" not in {row["name"] for row in s.all("PRAGMA table_info(people)")}
     assert s.one("SELECT COUNT(*) n FROM escrow")["n"] == 3
     s.db.close()
     raw = path.read_bytes()
+    assert legacy_topic.encode() not in raw
     assert not [w for w in words | {"Ab_-9xYz12Qq"} if w.encode() in raw]
     s = net.open_store(path)
     s.set_clock(Clock(T0 + 60))

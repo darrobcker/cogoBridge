@@ -12,7 +12,7 @@ Three long-running pieces, restarted if they exit:
   the code it runs is published, linked from those pages). `~/bridge-live` is a
   detached git worktree that only `scripts/deploy` moves, so editing a checkout changes nothing live;
 - `cloudflared tunnel run --url http://127.0.0.1:8770 <tunnel>`, carrying the public hostname to that port;
-- `scripts/tick` from the live tree every ten minutes: backups, trimming logs, down alerts.
+- `scripts/tick` from the live tree every ten minutes: backups, their copy off the machine, trimming logs.
 
 On a Mac these are the LaunchAgents in `ops/launchd/`; on Linux, three systemd units doing the same, with
 `BRIDGE_RESTART="sudo systemctl restart <unit>"` for the deploy. Data is in `~/.bridge` (`bridge.db` with its
@@ -32,7 +32,7 @@ wake-ups are webhooks). Files under `/static` asked for with `?v=` may be kept a
 ```bash
 mkdir -p ~/.bridge/launchd && for p in ops/launchd/*.plist; do sed -e "s|__HOME__|$HOME|g" \
   -e "s|__BASE_URL__|https://your.host|g" -e "s|__OPERATOR__|Your Name|g" \
-  -e "s|__NOTIFY__|https://ntfy.sh/a-long-random-topic|g" "$p" > ~/.bridge/launchd/"$(basename "$p")"; done
+  "$p" > ~/.bridge/launchd/"$(basename "$p")"; done
 tmutil addexclusion ~/.bridge ~/.bridge-backups       # backups must not outlive the 15 days members are told
 cp ~/.bridge/launchd/*.plist ~/Library/LaunchAgents/ && scripts/deploy <commit>
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/bridge.tick.plist
@@ -169,20 +169,10 @@ then send people there, and stop saying a computer or a paid plan is needed.
 - Trims `server.log`, `tunnel.log` and `tick.log` to their last megabyte once one passes 5 MB.
 - With `BRIDGE_BACKUP_COPY` set: copies the newest backup there once, and tries again on the next run if that
   failed.
-- With `BRIDGE_OPERATOR_NOTIFY` set: after two failed checks of the public `/health` in a row, posts
-  one line there, at most hourly, and one when it answers again; also when a backup or its copy fails.
+- A backup or copy that fails is a line in `tick.log` and a failed run, tried again ten minutes later.
 
-A machine that is off sends nothing, so something elsewhere has to check the public `/health` too:
-`.github/workflows/uptime.yml` does, from GitHub's machines every quarter of an hour, once the repository variable
-`BRIDGE_HEALTH_URL` names it (`<base>/health`). It also asks for the sign-in metadata and checks that `/mcp` answers
+Whether the server answers is asked from elsewhere, since a machine that is off says nothing:
+`.github/workflows/uptime.yml` checks the public `/health` from GitHub's machines every quarter of an hour, once the
+repository variable `BRIDGE_HEALTH_URL` names it (`<base>/health`). It also asks for the sign-in metadata and checks that `/mcp` answers
 401, which is what an app's servers see first, so whatever sits in front of the server turning them away shows as
-down too. A failed run is reported as GitHub reports any; the secret `BRIDGE_DOWN_ALERT` can name an ntfy topic as
-well. The ntfy lines say only up, down, or that a backup or its copy failed.
-
-## The ntfy budget
-
-Members' nudges and the alerts above all go to ntfy.sh from the server's machine. Its free tier allows 250
-messages a day per IP, and a free account shares that limit (ntfy issues #1963 and #1726). `bridge stats` shows
-the day's nudges (`nudges_today`). Two accounts replying to each other every ten minutes can pass 250 a day on
-their own, and the down alert is then lost with the rest. Before members' nudges near 200 a day, move the
-operator's alerts elsewhere, and pay for a tier or run ntfy yourself.
+down too. A failed run is reported as GitHub reports any.

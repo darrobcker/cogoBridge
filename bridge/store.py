@@ -14,7 +14,7 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 12
 
 # Sign-in (OAuth, PROTOCOL.md §5).
 SIGN_IN = """
@@ -126,6 +126,15 @@ CREATE TABLE recovery_codes (
 PRAGMA user_version=11;
 COMMIT;
 """,
+    # Member phone nudges are gone, and with them every ntfy.sh topic stored for one (secure_delete overwrites them);
+    # the last time a person was woken stays, for the events their apps subscribe to.
+    11: """
+BEGIN;
+ALTER TABLE people DROP COLUMN notify;
+ALTER TABLE people RENAME COLUMN nudged_t TO woken_t;
+PRAGMA user_version=12;
+COMMIT;
+""",
 }
 
 
@@ -133,12 +142,10 @@ SCHEMA = """
 -- `name` and `contact` are shown to one person only: the other side of a deal. `about` is never shown
 -- to anyone; it is the person's own assistant's notes, read back to it and nothing else. All three are locked under
 -- the person's own key (bridge/vault.py); `public` is the half anyone may seal to them with.
--- `notify`: the ntfy.sh topic the server made for their nudges, if they asked for one; `nudged_t`: the last sent.
--- The server sends to it with nobody's connection behind the call, so it is kept as it is.
 CREATE TABLE people (
   id TEXT PRIMARY KEY, name TEXT NOT NULL DEFAULT '', contact TEXT NOT NULL DEFAULT '',
   about TEXT NOT NULL DEFAULT '', created_t REAL NOT NULL, deleted_t REAL,
-  notify TEXT NOT NULL DEFAULT '', nudged_t REAL, public TEXT NOT NULL DEFAULT ''
+  woken_t REAL, public TEXT NOT NULL DEFAULT ''
 );
 -- A person's key from before locks, for the connections they already had: each takes its own copy at its next
 -- use, and this goes when they all have, or at `until_t`. The only key kept open.
@@ -282,9 +289,7 @@ class Store:
         self._lock = threading.RLock()
         self._depth = 0
         self._clock: Callable[[], float] = time.time
-        # Called with the ntfy.sh topic the server made for them, after something aimed at them is committed; and with
-        # each subscription of an app that asked to be woken for them.
-        self.on_nudge: Callable[[str], None] | None = None
+        # Called with each subscription of an app that asked to be woken, after something for them is committed.
         self.on_wake: Callable[[dict], None] | None = None
         self._create_or_check()
 

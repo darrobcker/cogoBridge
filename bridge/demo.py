@@ -50,7 +50,6 @@ def seed(home: Path) -> dict[str, str]:
     store = net.open_store(db)
     clock = _Clock(time.time() - 4 * DAY)
     store.set_clock(clock)
-    store.on_nudge = lambda topic: None
     # A process of its own, outside any server: what each made is held for the rest of it, as tests do.
     vault._SHARED = {}
     p = {}
@@ -121,6 +120,28 @@ def seed(home: Path) -> dict[str, str]:
     scam = go("Gus", "Earn $500 a day from home, no experience, act fast before spots fill.", neighbours)
     clock.later(3600)
     net.report(store, p["Ben"], scam)
+
+    # A lively few days: what the others ask for, much of it alike (several people after the same kind of thing), so
+    # View's Visuals have a community to show.
+    for who, text, where in [
+        ("Ben", "Anyone have a dolly or hand truck I could borrow for a move?", neighbours),
+        ("Felix", "Need two people to help carry a fridge down one flight of stairs.", neighbours),
+        ("Gus", "Spare moving boxes, free, come pick them up.", neighbours),
+        ("Chloe", "Looking for someone to belay at the bouldering gym on weekends.", climbing),
+        ("Dev", "Anyone want to carpool to the climbing gym on Thursdays?", climbing),
+        ("Chloe", "Selling old climbing shoes, size 40, barely worn.", climbing),
+        ("Ema", "Book club starting with Le Guin's The Dispossessed, looking for members.", books),
+        ("Ema", "Swap: two Murakami novels for any science fiction.", books),
+        ("Ben", "Looking for a tutor for high school calculus, once a week.", neighbours),
+        ("Felix", "French conversation partner wanted, an hour a week.", neighbours),
+        ("Gus", "Dog walker for weekday lunchtimes, a friendly lab.", neighbours),
+        ("Dev", "Someone to feed my cat for four days next week.", neighbours),
+        ("Ema", "Extra tomato seedlings, free to a good home.", neighbours),
+        ("Ben", "Help weeding the community garden plot on Sunday morning.", neighbours),
+        ("Felix", "Anyone have a pressure washer to lend for the patio?", neighbours),
+        ("Chloe", "Anyone know a good bike mechanic? My brakes squeal.", neighbours),
+    ]:
+        go(who, text, where)
 
     # Lately: Avery's yes waits for Avery to confirm it (a yes waits three days), and a need with nothing yet.
     clock.later(1.5 * DAY)

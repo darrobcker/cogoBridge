@@ -53,8 +53,8 @@ wrong, or misled by what it read, cannot introduce its person by itself.
 when they ask for what each does. The instructions used to tell an assistant to `check` at the start of every
 chat, say nothing on a run its person was not there for, suggest needs unasked, and keep tool names and ids from
 its person; the directory review found each of those an assistant acting without being asked, and they went. A
-person who wants to hear without asking sets it up themselves: a nudge, a scheduled task in their own words, or, in
-ChatGPT, asking it to watch Bridge.
+person who wants to hear without asking sets it up themselves: a scheduled task in their own words or, in ChatGPT,
+asking it to watch Bridge.
 
 **Nobody is named until both say yes.** This is what makes "go" cheap to say: a need can reach a
 thousand assistants without its author being exposed to anyone, and a no costs nobody anything because it
@@ -86,8 +86,8 @@ A group is several deals with one organiser, not a group conversation: nobody in
 named to everyone, and several were harmed by it.
 
 **A deal ends the conversation.** Both get the other's name and contact, and the deal shows what each side
-last said before it, which is where the when and where were. Nothing more is carried, and nobody is nudged:
-the two use each other's contact. Carrying messages after a deal let a deal partner message and nudge someone
+last said before it, which is where the when and where were. Nothing more is carried: the two use each other's
+contact. Carrying messages after a deal let a deal partner keep reaching someone
 for months with no way to stop it, which an audit ranked the top risk for real people. The cost: someone
 who cannot use the contact they are given (a call planned, an email set) has no fallback here, so how they
 will reach each other is settled before the yes.
@@ -111,10 +111,10 @@ to pass newer ones, so looking further meant saying no. Nobody is told how far a
 is not a no. On the other side, an assistant can work on a reply as long as its person likes, but what
 reaches the other person is bounded per conversation: three messages in a row, then nothing until they
 answer, and the week before a conversation ends runs from the first message still unanswered. A sender who
-kept writing used to keep a silent conversation open and nudge its other side at every message. A limit on
-what a person receives across all their conversations would have to be told to the senders it refused, and
+kept writing used to keep a silent conversation open and demand its other side's attention at every message. A
+limit on what a person receives across all their conversations would have to be told to the senders it refused, and
 would tell them about that person's other conversations (rule 7), so that budget is the reader's own
-assistant's, with the nudge at most every ten minutes. Nothing here scores, ranks or rewards volume.
+assistant's. Nothing here scores, ranks or rewards volume.
 
 **Everything happens in the chat, but the yes.** The web pages send someone from an invite link to add Bridge to
 their AI, ask for one press of Allow when their app signs in, and, at a yes, ask for one press of Confirm. An
@@ -211,13 +211,9 @@ uses their AI account reads it. Rules over 2000 characters are refused, never cu
 last, and said "saved" (audit). A scheduled run has no memory of the last one; the rules are what it goes by. The
 server interprets none of it, so a new kind of preference never needs a new field.
 
-**A wake-up, if a person wants one.** In the diary studies every person came back by luck. Two wake-ups exist, and
-both say only that something is waiting — never what, never who, at most every ten minutes between them, and
-never for a yes, which the other side must not learn of — when something is aimed at the person: a reply, a
-message, a deal, a report to an owner. One is a nudge to their phone: `setup` with notify "on" makes an unguessable
-ntfy.sh topic, and the server posts one fixed line to it. The server makes the topic, so it never connects to an
-address a member chose, and "off" then "on" replaces a topic that leaked. The other is ChatGPT's MCP Events
-(2026-09-29, every plan): told to "watch Bridge", a chat subscribes to one empty event, `waiting`, and when it
+**A wake-up, if a person wants one.** In the diary studies every person came back by luck. ChatGPT's MCP Events
+(2026-09-29, every plan) provide one: told to "watch Bridge", a chat subscribes to one empty event, `waiting`, and
+when it
 arrives ChatGPT does what the person said in that chat, even while they are away. That is the seamless version the
 design was missing, and it adds no content to anything: the event is empty, and the assistant calls `check`. Here
 the app chooses the address, which the server refused to connect to for members (docs/HISTORY.md), so the app
@@ -290,8 +286,8 @@ and "would they say yes" read from a brief rather than decided by a person. It s
 that the defences move the numbers. It does not show that real people want this.
 
 **First real use** (2026-09-21). Two friends, one need, one deal: first reply 4.6 minutes after the need
-went out, deal at 22.5 minutes, six messages, no errors, contacts exchanged. Both were online and nudged
-each other by text, so the timing is a best case; with two members nobody was unnamed in effect; and they already
+went out, deal at 22.5 minutes, six messages, no errors, contacts exchanged. Both were online and texted each other,
+so the timing is a best case; with two members nobody was unnamed in effect; and they already
 knew each other, so it says nothing yet about finding what people would otherwise have missed.
 
 **The swarm** (2026-09-22). Sixteen simulated people in three overlapping communities, each with a messy
@@ -456,7 +452,7 @@ against the rule. Instructions move behaviour; they do not bind it.
   removed Bridge from every app has an account nobody can open: the operator's code lets them back in as the same
   person, starting over, and their communities open again only with their invite links.
 - **Only ChatGPT can be woken.** Elsewhere a deal takes as long as the slower person takes to open a chat, or
-  until a scheduled check or a phone nudge brings them. In the situations study this was the largest gap by far:
+  until a scheduled check brings them. In the situations study this was the largest gap by far:
   nearly every situation that had to happen within hours — a shift to cover tonight, a same-day burial, insulin in
   Lisbon this afternoon — failed on it alone. A woken chat acts on what its person already said; anything else
   still waits for them.
@@ -472,8 +468,7 @@ against the rule. Instructions move behaviour; they do not bind it.
   what did, and a vague last message makes a vague deal. It cannot tell "yes, see you then" from new terms
   either, so a message on its own takes the other side's yes back and costs the deal a round.
 - **Three in a row is per conversation.** Someone with many accounts, or many needs to answer, still reaches
-  one person through many conversations. Their assistant pages, passes and reports; the nudge rings at most
-  every ten minutes.
+  one person through many conversations. Their assistant pages, passes and reports.
 - **Two conversations may be one match.** Two people who each answer the other's need hold two
   conversations, and nothing links them; the assistants are told to keep both until a deal.
 - **All of a person's things change together** when they leave, delete themselves or are removed, including
@@ -495,8 +490,6 @@ against the rule. Instructions move behaviour; they do not bind it.
   them go nowhere, so one who reports unnamed needs to an owner who acts on every report learns, by which
   needs vanish, which were not their partner's.
 - **Deleted data stays in backups for up to 15 days.**
-- **A nudge's timing is visible** to whoever sees the phone it rings on, and ntfy.sh sees when each topic is
-  nudged.
 
 ## 5. Scale
 
@@ -549,9 +542,9 @@ OpenAI that this host is the publisher's. The Allow page exists because sign-in 
 shows: it holds one button, and asks for nothing. The yes page exists because a name and contact should leave only on
 the person's own press (§2): it holds a Confirm and a Take back for each yes, and nothing else.
 
-No email, and no notification anyone did not ask for: a person may ask for a content-free nudge to an ntfy.sh
-topic the server makes, and a chat may ask to be woken by an empty event (§2); nothing else is ever sent to
-anyone who uses it. The operator's own machine tells the operator when the server stops answering, and that says
+No email, and no notification anyone did not ask for: a chat may ask to be woken by an empty event (§2); nothing
+else is ever sent to anyone who uses it. The operator's own machine tells the operator when the server stops
+answering, and that says
 nothing about anyone (`docs/OPERATIONS.md`). No scores, reputation, streaks or reminders — nothing that rewards
 volume, and nothing about a counterpart's past. No scheduling of meetings. No cap on how long two assistants may
 talk. No model on the server, no API keys. No ads.

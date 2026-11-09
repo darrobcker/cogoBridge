@@ -1,4 +1,4 @@
-# The Bridge protocol — draft 0.11
+# The Bridge protocol — draft 0.12
 
 How people's own AI assistants find each other something worth doing, without anyone being named until
 everyone involved says yes. This document is normative: an implementation that follows it interoperates with any
@@ -104,14 +104,14 @@ or belongs to someone else.
 | Operation | Arguments | Effect |
 |---|---|---|
 | `check` | `passed?`, `needs_from?` | Everything waiting: deals, conversations, needs that reached this person, their own open needs, their `about`, their communities, what setup is missing. With `passed`, the open needs they passed before, in place of new ones. With `needs_from`, a need id `check` gave: only needs, from that one on, older ones next; reading never passes or answers anything. A server SHOULD bound what `check` returns, so that deals and reports are never pushed past a host's limit on a tool's answer |
-| `setup` | `name?`, `contact?`, `about?`, `notify?`, `another_app?`, `new_link?`, `code?` | Sets any of the three. An `about` sent back in the marks `check` showed it in is saved without them. `notify`: `on` or `off` (§5). `another_app`: a code that makes a connection in another app this same person. `new_link`: a code too, and once it is used every other connection of theirs ends. `code`: uses one, in a connection that holds nothing yet (§5) |
+| `setup` | `name?`, `contact?`, `about?`, `another_app?`, `new_link?`, `code?` | Sets any of the three. An `about` sent back in the marks `check` showed it in is saved without them. `another_app`: a code that makes a connection in another app this same person. `new_link`: a code too, and once it is used every other connection of theirs ends. `code`: uses one, in a connection that holds nothing yet (§5) |
 | `go` | `text`, `community_id?`, `people?`, `days?` | Sends a need to every community the person is in, or to one. The same text already open is not sent twice: it goes on to communities it has not reached, or is refused. `people`: how many deals fill it (default 1; 0: none do). `days`: how long it stays up (default 7, from about an hour to 365) |
 | `reply` | `to` (a need, several needs, or a conversation), `text`, `agree?`, `revision?` | To a need: opens a conversation with its author. To several needs: opens one conversation with all their authors, each through the community the caller saw their need through; the caller's own open need may be one of them, at least one must be someone else's, and it holds at most ten people. The same caller on the same needs gets the same conversation back. To a conversation: adds a message, refused after three in a row from this person (§4). To a deal: refused, with "use their contact". Clears every yes. `agree` records the person's yes with it, as `agree` does, in one step; in a conversation already open, it needs the `revision` their person saw before this message, and if everyone else still in it had already said yes to that, the message is not sent, since it would clear their yeses, and the person's confirming makes the deal |
 | `agree` | `conversation_id`, `revision`, `one_more?`, `withdraw?` | Records this person's yes to the conversation at `revision`, refused if anyone else has written since, as waiting for them to confirm it, and returns their yes page's link (§3 rule 5); or says it already waits there, is already confirmed, or is a deal. Nothing is released until they confirm. It does not count as a message for the 7-day timer. `one_more`: on the author's own full need, this yes may make one more deal. `withdraw` takes the yes back, waiting or confirmed, before a deal, and after one stops the deal showing their name and contact, and the others', to them; nobody is told |
 | *yes page* | the link `agree` returned | Not a tool: a page the server hosts, which knows its person only by the link. Lists every yes they gave, newest first, with what each was to. Confirming one makes it count, refused once it no longer could (a message since, someone gone, the conversation over, its 3 days passed, or a race on the person's own need); taking one back does what `withdraw` does |
 | `pass` | `ref` (one or more need or conversation ids) | For each: hides a need, closes one's own need, or leaves a conversation, which carries on without them if two or more are still in it — and says which, or that it was already done |
 | `community` | `action` and what it needs | `create` (`name`); `join` (`invite_link`); `invite` (`community_id`): the link, any member; `leave` (`community_id`); `report` (`ref`). Owner only, while a member (one who has left is told so): `rename`, `new_link` (the old link stops working, and someone it sent to connect joins nothing through it), `remove` (`ref`: a need, a conversation of theirs, or a report), `dismiss` (`ref`: a report). In a conversation of several people, `report` and `remove` name one of them by seat, `c-…:2` |
-| `forget_me` | `confirm="delete everything"` | Erases the person: name, contact, about, nudge topic, needs, yeses and yes page, access — and empties every conversation they were in, on both sides, and what the others' yes pages showed of it, because the other side's messages may name them |
+| `forget_me` | `confirm="delete everything"` | Erases the person: name, contact, about, needs, yeses and yes page, access — and empties every conversation they were in, on both sides, and what the others' yes pages showed of it, because the other side's messages may name them |
 
 A need shows in a community while its author is a member there. Leaving takes their needs down there,
 rejoining brings back the open ones, and conversations under way carry on. A need that has gone from
@@ -199,7 +199,7 @@ A connection lasts until it is ended. Its access token is renewed without asking
 neither expires nor is replaced, since a connection whose renewal failed would ask for Allow again and make
 someone new. Allow always makes someone new: removing Bridge from an app and adding it again is a new
 connection. A code joins connections to one person. `setup` with `another_app` gives one: used once, within an
-hour, in a connection that holds nothing yet (no name, contact, notes, nudges, open needs, conversations or
+hour, in a connection that holds nothing yet (no name, contact, notes, open needs, conversations or
 community of its own), it makes that connection this person, who joins whatever communities it had joined, and
 erases the empty account it had made. `new_link` gives one too, and when it is used, every other connection of
 the person ends, the one that asked included: for when someone else may have had access, and to move off an
@@ -250,8 +250,8 @@ can add to it. Using a `new_link` code gives the page a new link, and the old on
 code an operator makes holds none, and whoever uses it starts over: what was locked for the old key cannot be
 opened again by anyone, and their communities open again only with their invite links. A server holds a person's
 key only in a call that came through one of their connections, and for that call alone. It MAY see what it needs
-to keep the rules: who is in which community, who is in which conversation, when things happen, how many, and the
-ntfy topic it nudges. What passes through a server while it delivers a call is in its memory; that it goes no
+to keep the rules: who is in which community, who is in which conversation, when things happen, and how many.
+What passes through a server while it delivers a call is in its memory; that it goes no
 further rests on the server running the code it publishes, and a server that publishes its code SHOULD say which
 version is running (the reference implementation's `/health`) and tag every version that has run, where its code is
 published. A database from before locks MAY keep each person's key open until each connection they already had has
@@ -259,20 +259,15 @@ taken its own copy, for at most two weeks.
 
 Only an event (below) reaches into an assistant's chat unasked. A person hears about a need when they ask their
 assistant what is waiting: in the chat, through an app they told to watch Bridge, which is then woken, or on a
-schedule they set up where their app allows it. A person MAY ask for a nudge when something is aimed
-at them — a message or new conversation from the other side, a deal, a report to them as owner — at most once
-every ten minutes. `notify` is `on` or `off`. The first `on` makes an unguessable ntfy.sh topic and returns it.
-`on` again sends one test line, at most once a day. `off` clears the topic, so a later `on` makes a new one. A
-nudge is one fixed line: it never says what or who, is never sent for a yes, and MUST NOT hold up or undo what
-caused it. ntfy.sh sees when a topic is nudged. Whoever sees the phone it rings on can tie its moment to what
-they sent.
+schedule they set up where their app allows it.
 
 An app that can be woken MAY subscribe, through a connection made by signing in, to one event: `waiting` (MCP
 Events, by webhook). Before anything is sent, the app echoes a challenge, signed with its secret, at the address
 it gave. The server posts only to public HTTPS addresses, connects to the address it checked, follows no
 redirects, and keeps a subscription at most 30 days unless the app renews it; it ends with its connection. The
-event goes when a nudge would, under one limit for all of a person's wake-ups together, and carries nothing:
-like a nudge, it never says what or who, is never sent for a yes, and MUST NOT hold up or undo what caused it.
+event goes when a message or new conversation from the other side, a deal, or a report to the person as owner is
+waiting, at most once every ten minutes. It carries nothing: never what or who, is never sent for a yes, and MUST
+NOT hold up or undo what caused it.
 The app then does what its person asked, in the chat that subscribed. The app's operator sees when it is woken.
 
 ## 6. What conformance means
