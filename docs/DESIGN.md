@@ -536,7 +536,9 @@ person a question after a deal.
 The only pages are home; the documentation a directory asks for (`/docs`, and `/support`, which goes to its
 support part), which a server's theme provides, since its words name the operator and how to reach them; the invite page and the connect page it leads to; the Allow page
 an app's sign-in opens, and its pages for a sign-in that expired or that a day's limit turned away; the invalid-link page, and the page for an address
-with none; the consent page, which is also the privacy policy and the terms; and a person's yes page. None of them
+with none; the consent page, which is also the privacy policy and the terms; and a person's yes page. A server may
+serve a site of its own in place of home and the documentation (`BRIDGE_SITE`): static pages that say what Bridge is
+and how to add it, which know nobody and do nothing; the pages above stay the server's. None of them
 knows who anyone is: the yes page knows its person only by its link. Beside them, one line of plain text proves to
 OpenAI that this host is the publisher's. The Allow page exists because sign-in needs a page the person's own browser
 shows: it holds one button, and asks for nothing. The yes page exists because a name and contact should leave only on

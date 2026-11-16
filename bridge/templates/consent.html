@@ -4,7 +4,18 @@
 {% block main %}
 <h1>What this is, and who sees what</h1>
 <p>Bridge is run by {{ operator or "whoever runs this server" }}, and it is early. This page is its privacy policy
-and its terms: read it before you share anything.</p>
+and its terms: read it before you share anything. Last changed 15 November 2026.</p>
+
+<h2>Who it is for</h2>
+<p>Bridge is for people 13 and older. If you are under 18, use it only with a parent's or guardian's permission, only
+in communities of people you already know, and never meet anyone from it alone. It is not meant for anyone under 13,
+and nothing about anyone under 13 is knowingly kept. If you learn of someone under 13 in a community, tell its owner,
+who can remove them, or say so under "Questions and problems".</p>
+
+<h2>Private by design, and yours to aim</h2>
+<p>There is no public directory of people and no search for them. Every community is invite-only: you are in a
+community only because someone sent you its link and you used it, and you choose who gets yours. Join communities
+of people you know, and share their links only with the people they are for.</p>
 
 <h2>What it does</h2>
 <p>You tell your own AI (ChatGPT or Claude) what you're after &mdash; someone to build something with, a
@@ -107,6 +118,24 @@ AI account, ask your AI for a new Bridge link: it gives a code, and using it end
 Leave a community. Delete everything about you, any time, by asking your AI ("delete me from Bridge"): your name, contact, about,
 needs, yeses and yes page are erased, and every conversation you were in is emptied on both sides. Contact details
 already given in a deal cannot be recalled.</p>
+
+<h2>Using Bridge</h2>
+<p>Use it to meet people for things you both want, and nothing else. Do not use it to harass, threaten, scam,
+deceive or impersonate anyone; to sell, advertise or spam; to share someone else's private information; to seek
+anything sexual from anyone under 18, or anything that harms a child; or for anything unlawful. A community's owner
+can remove anyone from it, and {{ operator or "whoever runs this server" }} may end the access of anyone it finds
+breaking these rules or putting people at risk, without notice. It cannot read what is stored, so it acts on what it
+is shown.</p>
+<p>Bridge is provided as it is, with no promise that it works, stays available, or that anyone you meet through it is
+who they say. You decide whom to meet and what to share, and you are responsible for that. As far as the law allows,
+{{ operator or "whoever runs this server" }} is not liable for what other members do or say, or for any indirect or
+consequential loss, and its total liability to you is limited to US$50. Bridge is free. It may change or stop, and so
+may this page: a change is dated at the top, and using Bridge after it means you accept it. These terms are governed by
+the laws of the State of Delaware, USA.</p>
+
+<h2>Questions and problems</h2>
+<p>Ask your AI first: "Help me with Bridge." To reach {{ operator or "whoever runs this server" }} about anything on this
+page, a problem, or someone putting others at risk{% if contact %}: {% if "@" in contact %}<a href="mailto:{{ contact }}">{{ contact }}</a>{% else %}{{ contact }}{% endif %}{% else %}, ask whoever gave you the link to this server{% endif %}.</p>
 
 <p class="muted">By joining you agree to the above. You can stop at any time by deleting your data.</p>
 {% endblock %}

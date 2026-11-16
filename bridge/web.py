@@ -71,14 +71,15 @@ def _version() -> str:
 
 def create_app(store: Store, *, base_url: str, operator: str = "", claude_listing: str = "",
                chatgpt_listing: str = "", contact: str = "", openai_challenge: str = "", theme: str = "",
-               source: str = "") -> Starlette:
+               source: str = "", site: str = "") -> Starlette:
     """`operator` is who runs this server, named on the pages, which say what they cannot read; `source`, where the
     code it runs is published, so a reader can check the pages' claim against it; `contact`, how to
     reach them, for the help a directory listing asks to link to. `openai_challenge`: the token OpenAI's plugin portal
     asks this host to show, to prove it is the publisher's. `theme`: a directory whose `templates/` are found before
     these and whose `static/` is served at /static — a server's own look, kept out of the protocol's code. A theme
     replaces the frame (`base.html`) and may replace `home.html`; the other pages' words, which say who can read
-    what before anyone presses a button, are these."""
+    what before anyone presses a button, are these. `site`: a directory of the site's own pages, served at / in place
+    of home and the docs (`site.SiteFiles`); the policy and the pages above stay these."""
     here = Path(__file__).parent
     looks = [Path(theme)] if theme else []
     env = Environment(loader=ChoiceLoader([FileSystemLoader(str(d / "templates")) for d in [*looks, here]]),
@@ -245,12 +246,16 @@ def create_app(store: Store, *, base_url: str, operator: str = "", claude_listin
     async def missing(request: Request, exc: Exception) -> Response:
         return page("missing.html", 404)
 
-    return Starlette(exception_handlers={404: missing},
-                     routes=[Route("/", home), Route("/health", health), Route("/consent", consent),
-                             Route("/privacy", consent), Route("/terms", consent),
-                             Route("/.well-known/openai-apps-challenge", challenge),
-                             Route("/favicon.ico", favicon), Mount("/static", _Kept(directory=static)),
-                             Route("/allow", allow, methods=["GET", "POST"]),
-                             Route("/join/{invite}", join, methods=["GET", "POST"]),
-                             Route("/yes/{link}", yes, methods=["GET", "POST"]), Route("/docs", docs),
-                             Route("/support", support)])
+    own = [Route("/health", health), Route("/consent", consent),
+           Route("/privacy", consent), Route("/terms", consent),
+           Route("/.well-known/openai-apps-challenge", challenge),
+           Route("/favicon.ico", favicon), Mount("/static", _Kept(directory=static)),
+           Route("/allow", allow, methods=["GET", "POST"]),
+           Route("/join/{invite}", join, methods=["GET", "POST"]),
+           Route("/yes/{link}", yes, methods=["GET", "POST"])]
+    if site:
+        from .site import SiteFiles
+        routes = [*own, Mount("/", app=SiteFiles(Path(site)))]
+    else:
+        routes = [Route("/", home), *own, Route("/docs", docs), Route("/support", support)]
+    return Starlette(exception_handlers={404: missing}, routes=routes)

@@ -13,6 +13,7 @@ For coding agents and new contributors. Read `PROTOCOL.md` first: it is short, a
 | `bridge/store.py` | SQLite schema, one connection, one lock |
 | `bridge/mcp_server.py` | One MCP tool per operation (`community` holds its actions); the instructions every assistant receives; what `check` renders |
 | `bridge/web.py`, `templates/`, `static/` | The invite pages, the Allow page sign-in opens, the consent page, a person's yes page (where a yes is confirmed), `/docs` when a theme gives one, and the not-found page, in plain dress; `BRIDGE_THEME` gives a server its own look. There is no other web surface, on purpose |
+| `bridge/site.py` | A site's own pages (`BRIDGE_SITE`), served at `/` in place of home and the docs: only the paths in `PAGES`. The policy, Allow, invites and the yes page stay `web.py`'s |
 | `bridge/oauth.py` | Sign-in: the MCP SDK's OAuth server, answered from `net`, where its rules are |
 | `bridge/notify.py` | Wake-ups: the ntfy.sh nudge, and MCP Events signed to the apps that subscribed |
 | `bridge/app.py`, `cli.py` | ASGI wiring; operator commands |

@@ -82,6 +82,10 @@ fonts, colours, images), may replace `home.html`, and gives `docs.html`, served 
 one does not have; the other pages' words, which say who can read what before
 anyone presses a button, stay the server's own. A `favicon.ico` in its `static/` replaces the server's.
 
+`BRIDGE_SITE` names a directory of a site's own pages, served at `/` in place of home and the docs (`bridge/site.py`):
+only its pages and what they load, never its scripts or notes. `/privacy`, `/terms`, Allow, invites and the yes page
+stay the server's, dressed by the theme, so a site's theme can make them look like the rest of it.
+
 ## Restoring from a backup
 
 Only when the live file is lost or damaged. Anything written after the backup is lost, including what people

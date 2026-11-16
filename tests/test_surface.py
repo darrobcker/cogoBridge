@@ -892,6 +892,33 @@ def test_a_theme_changes_the_frame_and_never_the_words_before_a_button(store, tm
     assert plain.get("/static/painting.jpg").status_code == 404
 
 
+def test_a_site_of_its_own_serves_its_pages_and_never_the_policy_or_the_tools(store, tmp_path):
+    """A site's own pages (BRIDGE_SITE, Style 1.5) take home and the docs; the policy, the invite, Allow and the yes
+    page stay the server's, so what people and the directories read is what this server does. Only the site's pages
+    and what they load are served, never its scripts, notes or theme; a missing page is the server's own."""
+    root = tmp_path / "site"
+    for path, text in {"index.html": "<p>home</p><script>go()</script>", "docs/index.html": "<p>join</p>",
+                       "support/index.html": "<p>help</p>", "why/index.html": "<p>why</p>", "src/a.js": "export {}",
+                       "styles/a.css": "p{}", "privacy/index.html": "<p>an old copy</p>", "scripts/dev.mjs": "",
+                       "package.json": "{}", "README.md": "notes", "theme/templates/base.html": "x"}.items():
+        (root / path).parent.mkdir(parents=True, exist_ok=True)
+        (root / path).write_text(text)
+    _, invite = net.create_community(store, net.new_person(store), "Friends")
+    b = browser(store, site=str(root), contact="help@Bridge.test")
+    home = b.get("/")
+    assert home.text.startswith("<p>home</p>") and "'sha256-" in home.headers["content-security-policy"]
+    assert b.get("/docs/").text == "<p>join</p>" and b.get("/support/").text == "<p>help</p>"
+    assert b.get("/src/a.js").status_code == 200 and b.get("/styles/a.css").status_code == 200
+    for path in ("/privacy", "/terms"):
+        page = b.get(path).text
+        assert "an old copy" not in page and "Pat Operator" in page and "help@Bridge.test" in page
+    assert "Pat Operator cannot read what is stored" in b.get(f"/join/{invite}").text
+    for hidden in ("/scripts/dev.mjs", "/package.json", "/README.md", "/theme/templates/base.html", "/view/"):
+        missing = b.get(hidden)
+        assert missing.status_code == 404 and 'href="/"' in missing.text, hidden
+    assert b.get("/health").json()["ok"] and b.get("/favicon.ico").status_code == 200
+
+
 def test_www_goes_to_the_address_itself(store):
     b = TestClient(create_app(store, base_url=SITE), base_url="https://www.bridge.test")
     moved = b.get("/join/abc?x=1", follow_redirects=False)
