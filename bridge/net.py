@@ -148,7 +148,7 @@ def _unidentifying(store: Store, person_id: str, text: str) -> None:
         raise Refused(f"that would identify someone: {hit!r} is your person's own name. If here it is a word, a "
                       "day or a place and not them, write it another way; otherwise describe instead.")
     if hit:
-        raise Refused(f"that would identify someone, gives a way to reach them, or is an ID or card number "
+        raise Refused(f"that would identify someone, gives a way to reach them, or is a card or ID number "
                       f"({hit!r}). Names, contacts and links stay out until both people say yes, and ID numbers and "
                       "payment details always do; describe instead.")
 

@@ -178,8 +178,8 @@ machinery, only framing. Negotiation is asynchronous, like email.
 
 **`check` is bounded.** It lists deals first, then reports to an owner, then conversations — those waiting on
 the person first, longest waiting first — then needs, then the person's own, under one character budget, and
-says how many did not fit. A deal that does not fit whole still shows short, with the name and contact, since
-the other side already has theirs, and deals always leave reports room, up to half the budget. Deals too are
+says how many did not fit. A deal lists without names or contacts, which `check` gives only with that
+deal's id, when its person asks (OpenAI's plugin review, 2026-11). A deal that does not fit whole still shows short, and deals always leave reports room, up to half the budget. Deals too are
 counted once even their short forms overflow: an offer for as many as come can pile them up, one answered
 conversation each, and the newest then wait for the oldest to leave. Seven accounts through one invite link,
 each writing twelve messages of 2000 characters, pushed an owner's reports and a genuine reply past 150,000

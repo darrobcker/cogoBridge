@@ -217,6 +217,7 @@ def test_two_friends_make_a_deal_entirely_in_chat(live):
     assert "+44 7700 900123" in call(ola, "check", deal=conversation)
     assert "Ola Mensah" in call(rae, "check", deal=f"[{conversation.upper()}]")
     assert "ERROR" in call(rae, "check", deal="c-nonesuch")
+    assert "+44 7700 900123" in call(ola, "check", deal=conversation, needs_from=need)    # paging does not hide it
 
 
 def test_three_people_pieced_together_make_one_deal_in_chat(live):
@@ -503,7 +504,7 @@ def test_restricted_data_is_never_asked_for_and_id_and_card_numbers_are_refused(
     call(ola, "community", action="create", name="Climbers")
     for text in ("Help with my taxes, SSN 123-45-6789", "Pay with card 4111 1111 1111 1111 please"):
         out = call(ola, "go", text=text)
-        assert "ERROR" in out and "ID or card number" in out, out
+        assert "ERROR" in out and "card or ID number" in out, out
 
 
 def test_tool_titles_speak_as_the_person_and_the_hints_say_what_a_tool_can_undo_and_whom_it_reaches(store):
@@ -616,6 +617,7 @@ def test_the_yes_page_lists_every_yes_and_takes_any_back(live):
     dealt = re.search(r'<section id="(y-\w+)">\s*<h2>A deal', page).group(1)
     assert "no longer shows" in press(f"{url}#{dealt}", "take_back")
     assert "Ola Mensah" not in call(rae, "check", deal=conversation) and "no longer shown" in call(rae, "check")
+    assert f"deal={conversation}" not in call(rae, "check").split("shows it whole")[0]    # nothing left to show
     assert "+44 7700 900123" not in call(ola, "check", deal=conversation)
     assert httpx.get(f"{live.base}/yes/not-a-page").status_code == 404
     assert httpx.post(url, data={"yes": "y-nonesuch", "action": "confirm"}).status_code == 404
