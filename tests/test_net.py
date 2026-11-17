@@ -2978,21 +2978,26 @@ def test_deals_that_do_not_fit_still_show_who_and_how_to_reach_them(world, store
     shown = [d for d in deals if f"DEAL [{d}]" in text]
     assert len(text) <= mcp_server.CHECK_BUDGET and "REPORTED [" in text
     # The oldest show, whole or short, and the newest wait, counted, until those leave.
-    assert 15 <= len(shown) < len(deals) and shown == deals[:len(shown)] and "zed0@example.com" in text
+    assert 15 <= len(shown) < len(deals) and shown == deals[:len(shown)]
     assert f"{len(deals) - len(shown)} deal(s)" in text[text.index("not shown"):]
+    # Who and how to reach them, only for the deal asked for (OpenAI plugin review, 2026-11).
+    assert "@example.com" not in text and "Zed Quill" not in text
+    one = mcp_server.render_check(net.inbox(store, owner), store.now(), deal=deals[0])
+    assert "zed0@example.com" in one and "zed1@example.com" not in one and "REPORTED" not in one
 
 
-def test_an_about_over_2000_characters_is_refused_never_cut(world, store):
+def test_an_about_over_its_limit_is_refused_never_cut(world, store):
     """`about` was cut to 2000 characters and setup said "About: set": the rules added last, such as "never say
-    yes to anything involving my children", were dropped without anyone knowing (audit #19)."""
+    yes to anything involving my children", were dropped without anyone knowing (audit #19). The limit is 500 since
+    OpenAI's plugin review (2026-11) read 2000 as room for a profile."""
     ola, _ = world.pair()
     before = net.me(store, ola)
-    notes = "x" * 1990 + " NEVER agree to anything involving my children."
+    notes = "x" * (net.MAX_ABOUT - 10) + " NEVER agree to anything involving my children."
     with pytest.raises(net.Refused, match=f"{len(notes)} characters"):
         net.setup(store, ola, name="Ola M", about=notes)
     assert net.me(store, ola) == before                               # nothing in that call was saved
-    net.setup(store, ola, about="y" * net.MAX_TEXT)
-    assert net.me(store, ola)["about"] == "y" * net.MAX_TEXT
+    net.setup(store, ola, about="y" * net.MAX_ABOUT)
+    assert net.me(store, ola)["about"] == "y" * net.MAX_ABOUT
 
 
 # -- storage -----------------------------------------------------------------------------------------------------

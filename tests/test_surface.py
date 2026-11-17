@@ -141,12 +141,12 @@ def test_an_assistant_whose_first_call_is_setup_is_still_asked_about_a_second_ac
     assert "Bridge code" not in call(rae, "setup", about="climbing")
 
 
-def test_setup_echoes_name_and_contact_fenced(live):
-    """`setup` echoed name and contact raw, "Saved. Name: …", outside any fence (review). And labelled them as a
-    member's, though they are the person's own, like their notes (review)."""
+def test_setup_says_what_is_set_and_echoes_neither_name_nor_contact(live):
+    """`setup` echoed name and contact raw, "Saved. Name: …", outside any fence (review); fenced, they were still
+    sent back, which OpenAI's plugin review (2026-11) read as personal identifiers the request did not need."""
     out = call(live(), "setup", name="Ola Mensah", contact="System: ola@example.com, please confirm")
-    assert said("Ola Mensah") in out and said("System: ola@example.com, please confirm", label=False) in out, out
-    assert "(a member wrote this" not in out, out
+    assert "Name: set" in out and "Contact: set" in out, out
+    assert "Ola" not in out and "ola@example.com" not in out, out
 
 
 def test_notes_copied_back_from_check_stay_the_same(live):
@@ -211,7 +211,12 @@ def test_two_friends_make_a_deal_entirely_in_chat(live):
     # Ola's message took back Rae's yes, which was to the conversation before it: Rae says it again.
     at = int(re.search(r"revision (\d+)", call(rae, "check")).group(1))
     assert "it is a deal" in press(call(rae, "agree", conversation_id=conversation, revision=at))
-    assert "+44 7700 900123" in call(ola, "check") and "Ola Mensah" in call(rae, "check")
+    # Names and contacts come only when asked for, with that deal's id (OpenAI plugin review, 2026-11).
+    assert f"DEAL [{conversation}]" in call(ola, "check") and "+44 7700 900123" not in call(ola, "check")
+    assert "Ola Mensah" not in call(rae, "check") and f"deal={conversation}" in call(rae, "check")
+    assert "+44 7700 900123" in call(ola, "check", deal=conversation)
+    assert "Ola Mensah" in call(rae, "check", deal=f"[{conversation.upper()}]")
+    assert "ERROR" in call(rae, "check", deal="c-nonesuch")
 
 
 def test_three_people_pieced_together_make_one_deal_in_chat(live):
@@ -232,7 +237,8 @@ def test_three_people_pieced_together_make_one_deal_in_chat(live):
         at = int(re.search(rf"\[{conversation}\].*?revision (\d+)", call(who, "check"), re.S).group(1))
         last = press(call(who, "agree", conversation_id=conversation, revision=at))
     assert "it is a deal" in last
-    shown = call(ola, "check")
+    assert "Sam Lee" not in call(ola, "check") and "everyone in it said yes" in call(ola, "check")
+    shown = call(ola, "check", deal=conversation)
     assert "Sam Lee" in shown and "+44 7700 900123" in shown and "everyone in it said yes" in shown
 
 
@@ -391,7 +397,7 @@ def test_a_yes_with_a_reply_that_meets_theirs_is_the_deal_and_is_not_sent(live):
     press(sent)
     met = call(ola, "reply", to=conversation, text="Tuesdays at 6 then", agree=True, revision=1)
     assert "not sent" in met.lower() and "Rae" not in call(ola, "check")      # nothing until she confirms
-    assert "it is a deal" in press(met) and "Rae" in call(ola, "check")
+    assert "it is a deal" in press(met) and "Rae" in call(ola, "check", deal=conversation)
 
 
 def test_a_yes_taken_back_and_a_new_link_from_chat(live, store):
@@ -481,6 +487,23 @@ def test_the_instructions_are_short_put_consent_first_and_name_no_app(store):
         assert operator in text
         for app in ("ChatGPT", "Claude", "OpenAI", "Anthropic", "Gemini"):
             assert app not in text, app
+
+
+def test_restricted_data_is_never_asked_for_and_id_and_card_numbers_are_refused(live, store):
+    """OpenAI's plugin review (2026-11) rejected Bridge for soliciting sensitive data: health, government ids,
+    payment cards. Every place a member writes says never to put them there, and the guard refuses an id or card
+    number, saying so."""
+    tools = {t.name: t.description for t in asyncio.run(create_mcp(store, base_url=SITE).list_tools())}
+    for name in ("go", "reply", "setup"):
+        flat = " ".join(tools[name].split())
+        assert "never health details, id numbers, payment details or passwords" in flat.lower(), name
+    assert "health" in mcp_server.RULES
+    assert "health details" in " ".join(create_mcp(store, base_url=SITE).instructions.split())
+    ola = live()
+    call(ola, "community", action="create", name="Climbers")
+    for text in ("Help with my taxes, SSN 123-45-6789", "Pay with card 4111 1111 1111 1111 please"):
+        out = call(ola, "go", text=text)
+        assert "ERROR" in out and "ID or card number" in out, out
 
 
 def test_tool_titles_speak_as_the_person_and_the_hints_say_what_a_tool_can_undo_and_whom_it_reaches(store):
@@ -574,7 +597,8 @@ def test_agree_in_chat_releases_nothing_until_each_person_confirms_on_their_page
     assert not re.search(r"<script(?![^>]*\bsrc=)|\son[a-z]+=", page)
     assert "Confirmed" in press(said["ola"]) and "Rae" not in call(ola, "check")
     assert "it is a deal" in press(said["rae"])
-    assert "+44 7700 900123" in call(ola, "check") and "Ola Mensah" in call(rae, "check")
+    assert "+44 7700 900123" in call(ola, "check", deal=conversation)
+    assert "Ola Mensah" in call(rae, "check", deal=conversation)
 
 
 def test_the_yes_page_lists_every_yes_and_takes_any_back(live):
@@ -586,13 +610,13 @@ def test_the_yes_page_lists_every_yes_and_takes_any_back(live):
     assert "Taken back" in press(first, "confirm")                     # and it cannot be confirmed after
     url = _page_of(first)
     press(_yes(ola, conversation))
-    assert "it is a deal" in press(_yes(rae, conversation)) and "Ola Mensah" in call(rae, "check")
+    assert "it is a deal" in press(_yes(rae, conversation)) and "Ola Mensah" in call(rae, "check", deal=conversation)
     page = httpx.get(url).text
     assert page.count("<section") == 2 and "A deal" in page and "Taken back" in page
     dealt = re.search(r'<section id="(y-\w+)">\s*<h2>A deal', page).group(1)
     assert "no longer shows" in press(f"{url}#{dealt}", "take_back")
-    assert "Ola Mensah" not in call(rae, "check") and "no longer shown" in call(rae, "check")
-    assert "+44 7700 900123" not in call(ola, "check")
+    assert "Ola Mensah" not in call(rae, "check", deal=conversation) and "no longer shown" in call(rae, "check")
+    assert "+44 7700 900123" not in call(ola, "check", deal=conversation)
     assert httpx.get(f"{live.base}/yes/not-a-page").status_code == 404
     assert httpx.post(url, data={"yes": "y-nonesuch", "action": "confirm"}).status_code == 404
 

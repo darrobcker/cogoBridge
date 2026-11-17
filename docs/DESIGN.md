@@ -206,7 +206,8 @@ what they want and bring as well as their rules, which is a profile built from t
 directory policy (1.G) rules out storing one; what a person wants goes out as a need, and their assistant's own
 memory, if the host has one, stays with the host. It is stored locked, opened only in a call through the person's
 own connection, and assistants are still told to write rules without naming what they protect, since anyone who
-uses their AI account reads it. Rules over 2000 characters are refused, never cut: a cut dropped the rules added
+uses their AI account reads it. Rules over 500 characters are refused, never cut (2000 until OpenAI's plugin review, 2026-11, read that much as
+room for a profile): a cut dropped the rules added
 last, and said "saved" (audit). A scheduled run has no memory of the last one; the rules are what it goes by. The
 server interprets none of it, so a new kind of preference never needs a new field.
 

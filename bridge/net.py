@@ -55,6 +55,9 @@ WAKE_S = 30 * 86400               # the longest an app's subscription to be woke
 ESCROW_S = 14 * 86400             # a key from before locks waits this long for its person's connections to copy it
 YES_WAITS_S = 3 * 86400           # a yes waits this long for its person to confirm it on their yes page
 MAX_TEXT, MAX_NAME, MAX_CONTACT = 2000, 80, 200
+# Standing rules for an assistant fit in a few lines; 2000 read as room for a profile (OpenAI plugin review, 2026-11).
+# Rules saved longer before stay until next changed.
+MAX_ABOUT = 500
 NUDGE_EVERY_S = 600               # at most one nudge per person per ten minutes
 NTFY = "https://ntfy.sh/"         # where every nudge goes: a topic the server made, never an address a member chose
 
@@ -145,8 +148,9 @@ def _unidentifying(store: Store, person_id: str, text: str) -> None:
         raise Refused(f"that would identify someone: {hit!r} is your person's own name. If here it is a word, a "
                       "day or a place and not them, write it another way; otherwise describe instead.")
     if hit:
-        raise Refused(f"that would identify someone or gives a way to reach them ({hit!r}). Names, "
-                      "contacts and links stay out until both people say yes; describe instead.")
+        raise Refused(f"that would identify someone, gives a way to reach them, or is an ID or card number "
+                      f"({hit!r}). Names, contacts and links stay out until both people say yes, and ID numbers and "
+                      "payment details always do; describe instead.")
 
 
 def _community_name(raw: str) -> str:
@@ -330,7 +334,7 @@ def setup(store: Store, person_id: str, *, name: str | None = None, contact: str
                 # Copied out of `check` whole, the notes gained a mark on every line at every save (review).
                 about = about[3:-3].replace("\n| ", "\n")
             # Notes that show as nothing are none: kept, `check` showed an empty fence as notes to follow (review).
-            if not _measured(about, "`about`", MAX_TEXT, ". Nothing was saved: shorten the notes, keeping every "
+            if not _measured(about, "`about`", MAX_ABOUT, ". Nothing was saved: shorten the notes, keeping every "
                              "rule your person gave, and send them all again"):
                 about = ""
             store.exec("UPDATE people SET about=? WHERE id=?", vault.lock_text(_self(person_id), about, "about"),
